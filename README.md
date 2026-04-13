@@ -3,7 +3,7 @@
 ### Curso de Ciência da Computação — FURB (2026)
 
 ## Descrição
-Este repositório contém a implementação do trabalho final da disciplina **Eletiva IV - Simulação**, do **Curso de Ciência da Computação**, voltado à **simulação de evacuação de um edifício de 30 andares em situação de incêndio**. O problema envolve a modelagem de ocupantes, brigadistas, fogo, fumaça, escadas e restrições de deslocamento em contexto de emergência. :contentReference[oaicite:1]{index=1}
+Este repositório contém a implementação do trabalho final da disciplina **Eletiva IV - Simulação**, do **Curso de Ciência da Computação**, voltado à **simulação de evacuação de um edifício de 30 andares em situação de incêndio**. O problema envolve a modelagem de ocupantes, brigadistas, fogo, fumaça, escadas e restrições de deslocamento em contexto de emergência. :contentReference.
 
 O projeto foi organizado segundo o **ciclo básico da simulação** trabalhado na disciplina:
 **Sistema de Referência (S) → Modelo (M) → Formalismo (F) → Computador (C) → Execução (E) → Observação (O)**. :contentReference[oaicite:2]{index=2}
