@@ -1,0 +1,8 @@
+# Dependências do projeto
+# Instalar com: pip install -r requirements.txt
+
+mesa==2.3.4          # Framework de simulação baseada em agentes
+numpy>=1.24          # Computação numérica (grades, matrizes)
+pandas>=2.0          # Manipulação de dados e exportação CSV
+matplotlib>=3.7      # Geração de gráficos e visualizações
+seaborn>=0.12        # Heatmaps e gráficos estatísticos
