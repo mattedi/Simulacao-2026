@@ -26,6 +26,14 @@ def process_file(file_path: Path) -> pd.DataFrame:
             "article title": "title",
             "doi": "doi",
         }
+    elif "scopus" in name:
+        df = pd.read_csv(file_path)
+        mapping = {
+            "cited by": "citations",
+            "year": "year",
+            "title": "title",
+            "doi": "doi",
+        }
     else:
         return pd.DataFrame()
 

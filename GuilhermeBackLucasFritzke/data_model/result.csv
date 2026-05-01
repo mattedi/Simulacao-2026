@@ -1,16 +1,16 @@
 citations,year,title,doi,impact
-54.0,2024,A building information modeling-based fire emergency evacuation simulation system for large infrastructures,10.1016/j.ress.2023.109917,18.0
-200.0,2015,Agent-based simulation of building evacuation: Combining human behavior with predictable spatial accessibility in a fire emergency,10.1016/j.ins.2014.09.029,16.666666666666668
+145.0,2020,A BIM-based simulation framework for fire safety management and investigation of the critical factors affecting human evacuation performance,10.1016/j.aei.2020.101093,20.714285714285715
+174.0,2018,IoT-Based intelligent modeling of smart home environment for fire prevention and safety,10.3390/jsan7010011,19.333333333333332
+55.0,2024,A building information modeling-based fire emergency evacuation simulation system for large infrastructures,10.1016/j.ress.2023.109917,18.333333333333332
+207.0,2015,Agent-based simulation of building evacuation: Combining human behavior with predictable spatial accessibility in a fire emergency,10.1016/j.ins.2014.09.029,17.25
+150.0,2018,Smoke spread characteristics inside a tunnel with natural ventilation under a strong environmental wind,10.1016/j.tust.2018.08.004,16.666666666666668
+305.0,2008,Evacuation simulation models: Challenges in modeling high rise building evacuation with cellular automata approaches,10.1016/j.autcon.2007.06.005,16.05263157894737
+137.0,2018,A BIM-based visualization and warning system for fire rescue,10.1016/j.aei.2018.04.015,15.222222222222221
+76.0,2022,Fire evacuation supported by centralized and decentralized visual guidance systems,10.1016/j.ssci.2021.105451,15.2
+181.0,2015,Applying building information modeling to support fire safety management,10.1016/j.autcon.2015.02.001,15.083333333333334
+118.0,2019,IFC-centric performance-based evaluation of building evacuations using fire dynamics simulation and agent-based modeling,10.1016/j.autcon.2019.01.007,14.75
+301.0,2006,On the maximum smoke temperature under the ceiling in tunnel fires,10.1016/j.tust.2005.10.003,14.333333333333334
+155.0,2016,Human exit choice in crowded built environments: Investigating underlying behavioural differences between normal egress and emergency evacuations,10.1016/j.firesaf.2016.07.003,14.090909090909092
+66.0,2022,"Design, Development, and Evaluation of a Virtual Reality Serious Game for School Fire Preparedness Training",10.3390/educsci12040281,13.2
 26.0,2025,Agent-based fire evacuation model using social learning theory and intelligent optimization algorithms,10.1016/j.ress.2025.111000,13.0
-65.0,2021,Investigating the influence of route turning angle on compliance behaviors and evacuation performance in a virtual-reality-based experiment,10.1016/j.aei.2021.101259,10.833333333333334
-67.0,2020,An agent-based simulator for indoor crowd evacuation considering fire impacts,10.1016/j.autcon.2020.103395,9.571428571428571
-200.0,2006,Modeling Crowd and Trained Leader Behavior during Building Evacuation,10.1109/mcg.2006.133,9.523809523809524
-25.0,2024,Optimizing phased-evacuation strategy for high-rise buildings in fire,10.1016/j.jobe.2024.110084,8.333333333333334
-33.0,2023,The integration of building information modelling and fire evacuation models,10.1016/j.jobe.2022.105557,8.25
-13.0,2025,A congestion prediction model for optimizing emergency evacuation design of university libraries in China,10.1016/j.jobe.2024.111537,6.5
-18.0,2024,Multifactor dynamic coupled model for building fire evacuation: Case study of the Karamay Friendship Palace fire,10.1016/j.jobe.2024.110079,6.0
-18.0,2024,Emergency evacuation of urban underground commercial street based on BIM approach,10.1016/j.asej.2024.102633,6.0
-21.0,2023,Human behaviour and evacuation time for large underground comprehensive buildings during fire risk process,10.1016/j.jlp.2023.105134,5.25
-14.0,2024,Development of a time pressure-based model for the simulation of an evacuation in a fire emergency,10.1016/j.jobe.2024.109069,4.666666666666667
-83.0,2009,A distributed decision support system for Building Evacuation,10.1109/hsi.2009.5091000,4.611111111111111
-31.0,2020,Comparison of Emergency Response Abilities and Evacuation Performance Involving Vulnerable Occupants in Building Fire Situations,10.3390/su12010087,4.428571428571429
+64.0,2022,Fire Emergency Evacuation from a School Building Using an Evolutionary Virtual Reality Platform,10.3390/buildings12020223,12.8
