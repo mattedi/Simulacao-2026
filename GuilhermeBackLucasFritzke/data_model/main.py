@@ -9,8 +9,9 @@ CURRENT_YEAR = 2026
 
 def process_file(file_path: Path) -> pd.DataFrame:
     name = file_path.name.lower()
-
+    source_name = ""
     if "ieee" in name:
+        source_name = "IEEE"
         df = pd.read_csv(file_path)
         mapping = {
             "article citation count": "citations",
@@ -19,6 +20,7 @@ def process_file(file_path: Path) -> pd.DataFrame:
             "doi": "doi",
         }
     elif "web" in name:
+        source_name = "Web"
         df = pd.read_excel(file_path)
         mapping = {
             "times cited, all databases": "citations",
@@ -28,6 +30,7 @@ def process_file(file_path: Path) -> pd.DataFrame:
         }
     elif "scopus" in name:
         df = pd.read_csv(file_path)
+        source_name = "Scopus"
         mapping = {
             "cited by": "citations",
             "year": "year",
@@ -41,6 +44,7 @@ def process_file(file_path: Path) -> pd.DataFrame:
 
     existing_cols = [col for col in mapping.keys() if col in df.columns]
     df = df[existing_cols].rename(columns=mapping)  # pyright: ignore[reportCallIssue]
+    df["source"] = source_name
 
     return df
 
@@ -71,6 +75,12 @@ def main():
     # Remove Duplicates & Sort
     df = df.sort_values(by="impact", ascending=False)
     df = df.drop_duplicates(subset="doi", keep="first")
+
+    # Count removed dups
+    counts = df["source"].value_counts()
+    print("\nQuantidade de artigos únicos por fonte (PRISMA):")
+    print(counts)
+    print(f"Total: {counts.sum()}")
 
     top_15 = df.head(15)
     top_15.to_csv(OUTPUT_FILE, index=False)
