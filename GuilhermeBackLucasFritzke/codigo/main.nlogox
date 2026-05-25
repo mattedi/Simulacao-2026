@@ -1,0 +1,2333 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.3" snapToGrid="true">
+  <code><![CDATA[;; ==========================================================================
+;; SIMULAÇÃO DE EVACUAÇÃO EMERGENCIAL SOB INCÊNDIO
+;; Edifício de 30 Andares — Formalismo ABM (Guilherme & Lucas)
+;; NetLogo 7.1 — VERSÃO REVISADA (v3)
+;;
+;; MUDANÇAS vs v2:
+;;   [V3-A] Nova procedure `ver`: sincroniza `andar-exibido` com o slider
+;;          `andar-visualizar` mesmo com o `go` pausado. Acoplar a um
+;;          botão FOREVER chamado "Ver" na interface.
+;;   [V3-B] `criar-ocupantes` agora garante NO MÁXIMO 1 agente por célula
+;;          no setup. Filtra patches já ocupados no andar e exclui as
+;;          saídas (tipo = 3) para evitar evacuação imediata no spawn.
+;;
+;; MUDANÇAS PRÉVIAS (v2 vs v1):
+;;   [1] Movimento determinístico por "passos por tick"
+;;   [2] alpha-dens reduzido de 0.266 -> 0.12
+;;   [3] cap-escada aumentado de 6 -> 15
+;;   [4] Visibilidade mínima para transitar reduzida de 3 -> 1.5
+;;   [5] Detector de deadlock: agente parado por N ticks faz desvio
+;;   [6] Descida de escada agora ENCADEIA até o térreo no mesmo tick
+;;   [7] Fluxo de saída: agentes a até 2 patches da porta evacuam
+;;   [8] Velocidade mínima de 0.05 -> 0.25
+;; ==========================================================================
+
+;; --- BREEDS ---
+breed [ocupantes ocupante]
+breed [brigadistas brigadista]
+
+;; --- GLOBALS ---
+globals [
+  num-andares
+  andar-exibido
+  t-alarme
+  t-max-sim
+
+  escada1-x escada1-y
+  escada2-x escada2-y
+  saida1-x saida1-y
+  saida2-x saida2-y
+
+  fogo-andar-inicial
+  fogo-x-inicial
+  fogo-y-inicial
+
+  total-ocupantes
+  n-evacuados
+  n-feridos
+  n-mortos
+  n-ativos
+
+  alpha-dens
+  beta-fumaca
+  gamma-ext
+  v0-visib
+  rho-max
+  rho-bloq
+  cap-escada
+  phi-lc50
+  t-crit-morto
+
+  ;; PARÂMETROS DE FLUIDEZ
+  vis-min-trans
+  deadlock-limite
+  raio-evacuacao
+
+  t-evacuacao
+  area-fogo-total
+  lista-curva-evac
+]
+
+;; --- PATCH VARIABLES ---
+patches-own [
+  tipo-celula-l
+  fumaca-l
+  fogo-l
+  temperatura-l
+  visibilidade-l
+  acum-densidade-l
+]
+
+;; --- OCCUPANT VARIABLES ---
+ocupantes-own [
+  meu-andar
+  tipo-agente
+  vel-max
+  vel-atual
+  t-reacao
+  estado
+  nivel-panico
+  fed-valor
+  perfil-conhec
+  alvo-x alvo-y alvo-andar
+  memoria-ticks
+  tick-saida
+  ticks-parado
+  ultimo-x ultimo-y
+]
+
+;; --- BRIGADIST VARIABLES ---
+brigadistas-own [
+  meu-andar
+  vel-max
+  andar-base
+  orientados
+  estado-brig
+  alvo-x-brig
+  alvo-y-brig
+  fed-valor-brig
+  tick-saida-brig
+  ticks-parado-brig
+  ultimo-x-brig
+  ultimo-y-brig
+]
+
+;; =========================================================================
+;; SETUP
+;; =========================================================================
+to setup
+  clear-all
+
+  set num-andares 30
+  set t-alarme 30
+  set t-max-sim 1800
+
+  set escada1-x 2   set escada1-y 10
+  set escada2-x 17  set escada2-y 10
+
+  set saida1-x 0   set saida1-y 10
+  set saida2-x 19  set saida2-y 10
+
+  set fogo-andar-inicial andar-fogo
+  set fogo-x-inicial 10
+  set fogo-y-inicial 10
+
+  set alpha-dens 0.12
+  set beta-fumaca 0.706
+  set gamma-ext 1.0
+  set v0-visib 30
+  set rho-max 5.4
+  set rho-bloq 8.0
+  set cap-escada 15
+  set phi-lc50 0.05
+  set t-crit-morto 100
+
+  set vis-min-trans 1.5
+  set deadlock-limite 8
+  set raio-evacuacao 2
+
+  set n-evacuados 0
+  set n-feridos 0
+  set n-mortos 0
+  set t-evacuacao 0
+  set lista-curva-evac []
+
+  inicializar-edificio
+
+  ;; Foco de incêndio + vizinhos
+  ask patch fogo-x-inicial fogo-y-inicial [
+    set fogo-l replace-item fogo-andar-inicial fogo-l 1
+    set temperatura-l replace-item fogo-andar-inicial temperatura-l 200
+    set fumaca-l replace-item fogo-andar-inicial fumaca-l 0.5
+  ]
+  ask patch fogo-x-inicial fogo-y-inicial [
+    ask neighbors [
+      if item fogo-andar-inicial tipo-celula-l != 4 [
+        set fogo-l replace-item fogo-andar-inicial fogo-l 1
+        set temperatura-l replace-item fogo-andar-inicial temperatura-l 150
+        set fumaca-l replace-item fogo-andar-inicial fumaca-l 0.3
+      ]
+    ]
+  ]
+
+  criar-ocupantes
+  criar-brigadistas
+
+  set total-ocupantes count ocupantes
+  set n-ativos total-ocupantes
+  set andar-exibido andar-visualizar
+
+  atualizar-visualizacao
+  reset-ticks
+end
+
+;; =========================================================================
+;; INICIALIZAR EDIFÍCIO
+;; =========================================================================
+to inicializar-edificio
+  ask patches [
+    set tipo-celula-l n-values num-andares [0]
+    set fumaca-l n-values num-andares [0]
+    set fogo-l n-values num-andares [0]
+    set temperatura-l n-values num-andares [20]
+    set visibilidade-l n-values num-andares [30]
+    set acum-densidade-l n-values num-andares [0]
+
+    let px pxcor
+    let py pycor
+
+    let k 0
+    while [k < num-andares] [
+
+      ;; PAREDES EXTERNAS
+      if px = 0 or px = 19 or py = 0 or py = 19 [
+        let eh-saida false
+        if k = 0 [
+          if (px = saida1-x and py = saida1-y) or
+             (px = saida2-x and py = saida2-y) [
+            set eh-saida true
+          ]
+        ]
+        if not eh-saida [
+          set tipo-celula-l replace-item k tipo-celula-l 4
+        ]
+      ]
+
+      ;; PAREDES INTERNAS HORIZONTAIS
+      if (py = 5 or py = 15) and (px > 0 and px < 19) [
+        if not (px = 5 or px = 10 or px = 15) [
+          set tipo-celula-l replace-item k tipo-celula-l 4
+        ]
+      ]
+      ;; PAREDES INTERNAS VERTICAIS
+      if (px = 7 or px = 13) and (py > 0 and py < 19) [
+        if not (py = 5 or py = 10 or py = 15) [
+          set tipo-celula-l replace-item k tipo-celula-l 4
+        ]
+      ]
+
+      ;; CORREDORES
+      if (py >= 9 and py <= 11) and (px > 0 and px < 19) [
+        if item k tipo-celula-l != 4 [
+          set tipo-celula-l replace-item k tipo-celula-l 1
+        ]
+      ]
+      if (px >= 9 and px <= 11) and (py > 0 and py < 19) [
+        if item k tipo-celula-l != 4 [
+          set tipo-celula-l replace-item k tipo-celula-l 1
+        ]
+      ]
+
+      ;; ESCADAS
+      if (px = escada1-x and py = escada1-y) or
+         (px = escada2-x and py = escada2-y) [
+        set tipo-celula-l replace-item k tipo-celula-l 2
+      ]
+      if (abs (px - escada1-x) <= 1 and abs (py - escada1-y) <= 1) or
+         (abs (px - escada2-x) <= 1 and abs (py - escada2-y) <= 1) [
+        if item k tipo-celula-l = 0 [
+          set tipo-celula-l replace-item k tipo-celula-l 1
+        ]
+      ]
+
+      ;; SAÍDAS (térreo)
+      if k = 0 [
+        if (px = saida1-x and py = saida1-y) or
+           (px = saida2-x and py = saida2-y) [
+          set tipo-celula-l replace-item k tipo-celula-l 3
+        ]
+      ]
+
+      set k k + 1
+    ]
+  ]
+end
+
+;; =========================================================================
+;; CRIAR OCUPANTES  [MODIFICADO em v3]
+;; - Garante 1 agente por célula (filtro `not any? ocupantes-here`)
+;; - Exclui saídas (tipo = 3) para evitar evacuação imediata no spawn
+;; - Aborta com aviso se não há células livres suficientes no andar
+;; =========================================================================
+to criar-ocupantes
+  let k 0
+  while [k < num-andares] [
+    let n-por-andar ocupantes-por-andar
+    let i 0
+    while [i < n-por-andar] [
+      let celulas-livres patches with [
+        item k tipo-celula-l != 4 and    ;; não-parede
+        item k tipo-celula-l != 2 and    ;; não-escada
+        item k tipo-celula-l != 3 and    ;; não-saída
+        not any? ocupantes-here with [meu-andar = k]  ;; não-ocupada neste andar
+      ]
+      ifelse any? celulas-livres [
+        ask one-of celulas-livres [
+          sprout-ocupantes 1 [
+            set meu-andar k
+            set shape "person"
+            set size 0.8
+
+            ;; 70% adulto, 20% idoso, 10% PcD
+            let rand-tipo random 100
+            ifelse rand-tipo < 70 [
+              set tipo-agente "adulto"
+              set vel-max 1.0
+              set color cyan
+            ] [
+              ifelse rand-tipo < 90 [
+                set tipo-agente "idoso"
+                set vel-max 0.6
+                set color yellow
+              ] [
+                set tipo-agente "pcd"
+                set vel-max 0.4
+                set color orange
+              ]
+            ]
+
+            ;; Tempo de reação: Lognormal(mu=3.5, sigma=0.6)
+            let z random-normal 0 1
+            let t-react-raw exp (3.5 + 0.6 * z)
+            set t-reacao t-alarme + max (list 5 (min (list 120 t-react-raw)))
+
+            ;; Perfil de conhecimento
+            let rand-perfil random 100
+            ifelse rand-perfil < 20 [ set perfil-conhec 1 ] [
+              ifelse rand-perfil < 50 [ set perfil-conhec 2 ] [
+                ifelse rand-perfil < 75 [ set perfil-conhec 3 ] [
+                  ifelse rand-perfil < 90 [ set perfil-conhec 4 ] [
+                    set perfil-conhec 5
+                  ]
+                ]
+              ]
+            ]
+
+            set estado "ativo"
+            set nivel-panico 0
+            set fed-valor 0
+            set memoria-ticks 0
+            set tick-saida -1
+            set ticks-parado 0
+            set ultimo-x xcor
+            set ultimo-y ycor
+
+            definir-alvo-inicial
+          ]
+        ]
+      ] [
+        ;; Não há mais células livres neste andar — aborta o loop interno
+        ;; com aviso. O usuário viu "Ativos < total esperado" no monitor.
+        user-message (word
+          "Aviso: andar " k " saturado. Foram alocados "
+          i " de " n-por-andar " ocupantes solicitados.")
+        set i n-por-andar  ;; força saída do while interno
+      ]
+      set i i + 1
+    ]
+    set k k + 1
+  ]
+end
+
+;; =========================================================================
+;; WAYPOINT-SAIDA-SALA
+;; =========================================================================
+to-report waypoint-saida-sala
+  if pxcor <= 6  and pycor <= 4  [ report (list 5  5)  ]   ;; SW -> porta (5,5)
+  if pxcor <= 6  and pycor >= 16 [ report (list 5  15) ]   ;; NW -> porta (5,15)
+  if pxcor >= 14 and pycor <= 4  [ report (list 15 5)  ]   ;; SE -> porta (15,5)
+  if pxcor >= 14 and pycor >= 16 [ report (list 15 15) ]   ;; NE -> porta (15,15)
+  if pxcor >= 8 and pxcor <= 12 and pycor >= 16 [ report (list 10 15) ]
+  if pxcor >= 8 and pxcor <= 12 and pycor <= 4  [ report (list 10 5)  ]
+  report nobody
+end
+
+;; =========================================================================
+;; DEFINIR ALVO INICIAL
+;; =========================================================================
+to definir-alvo-inicial
+  let dest-x 0
+  let dest-y 0
+  let dest-andar meu-andar
+
+  ifelse meu-andar = 0 [
+    let risco-s1 0
+    let risco-s2 0
+    ask patch saida1-x saida1-y [
+      set risco-s1 item 0 fumaca-l + (item 0 fogo-l * 100)
+    ]
+    ask patch saida2-x saida2-y [
+      set risco-s2 item 0 fumaca-l + (item 0 fogo-l * 100)
+    ]
+    ifelse risco-s1 <= risco-s2 [
+      set dest-x saida1-x set dest-y saida1-y
+    ] [
+      set dest-x saida2-x set dest-y saida2-y
+    ]
+    set dest-andar 0
+  ] [
+    let d1 distancexy escada1-x escada1-y
+    let d2 distancexy escada2-x escada2-y
+
+    let esc1-bloq false
+    let esc2-bloq false
+    ask patch escada1-x escada1-y [
+      if item [meu-andar] of myself fogo-l = 1 [ set esc1-bloq true ]
+    ]
+    ask patch escada2-x escada2-y [
+      if item [meu-andar] of myself fogo-l = 1 [ set esc2-bloq true ]
+    ]
+
+    ifelse esc1-bloq and esc2-bloq [
+      set dest-x 10 set dest-y 10
+    ] [
+      ifelse esc1-bloq [
+        set dest-x escada2-x set dest-y escada2-y
+      ] [
+        ifelse esc2-bloq [
+          set dest-x escada1-x set dest-y escada1-y
+        ] [
+          ifelse perfil-conhec = 5 and random 100 < 50 [
+            set dest-x (random 18) + 1
+            set dest-y (random 18) + 1
+          ] [
+            ifelse d1 <= d2 [
+              set dest-x escada1-x set dest-y escada1-y
+            ] [
+              set dest-x escada2-x set dest-y escada2-y
+            ]
+          ]
+        ]
+      ]
+    ]
+    set dest-andar meu-andar
+  ]
+
+  let wp waypoint-saida-sala
+  ifelse wp = nobody [
+    set alvo-x dest-x
+    set alvo-y dest-y
+    set alvo-andar dest-andar
+  ] [
+    set alvo-x item 0 wp
+    set alvo-y item 1 wp
+    set alvo-andar meu-andar
+  ]
+end
+
+;; =========================================================================
+;; CRIAR BRIGADISTAS
+;; =========================================================================
+to criar-brigadistas
+  if not usar-brigadistas? [ stop ]
+  let k 0
+  while [k < num-andares] [
+    ask patch 10 10 [
+      sprout-brigadistas 1 [
+        set meu-andar k
+        set shape "person"
+        set size 1.0
+        set color red
+        set vel-max 1.5
+        set andar-base k
+        set orientados 0
+        set estado-brig "orientando"
+        set alvo-x-brig 10
+        set alvo-y-brig 10
+        set fed-valor-brig 0
+        set tick-saida-brig -1
+        set ticks-parado-brig 0
+        set ultimo-x-brig xcor
+        set ultimo-y-brig ycor
+      ]
+    ]
+    set k k + 1
+  ]
+end
+
+;; =========================================================================
+;; GO (LOOP PRINCIPAL)
+;; =========================================================================
+to go
+  if ticks >= t-max-sim [ stop ]
+  if not any? ocupantes with [estado = "ativo" or estado = "ferido"] [ stop ]
+
+  atualizar-fogo
+  atualizar-fumaca
+  atualizar-visibilidade
+  atualizar-temperatura
+
+  ask ocupantes with [estado = "ativo" or estado = "ferido"] [
+    if ticks >= t-reacao [
+      atualizar-panico
+      replanejar-se-necessario
+      calcular-velocidade
+      mover-agente
+      atualizar-deadlock
+    ]
+  ]
+
+  if usar-brigadistas? [
+    ask brigadistas with [estado-brig = "orientando"] [
+      orientar-ocupantes
+      verificar-transicao-evacuacao-brigadista
+    ]
+    ask brigadistas with [estado-brig = "evacuando"] [
+      atualizar-fed-brigadista
+      atualizar-estado-brigadista
+      if estado-brig = "evacuando" [
+        mover-brigadista
+        verificar-evacuacao-brigadista
+      ]
+    ]
+  ]
+
+  ask ocupantes with [estado = "ativo" or estado = "ferido"] [
+    calcular-fed
+    atualizar-estado-agente
+    verificar-evacuacao
+  ]
+
+  atualizar-contadores
+  set lista-curva-evac lput n-evacuados lista-curva-evac
+
+  set andar-exibido andar-visualizar
+  atualizar-visualizacao
+
+  tick
+end
+
+;; =========================================================================
+;; R6c — PROPAGAÇÃO DO FOGO
+;; =========================================================================
+to atualizar-fogo
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      if item k fogo-l = 0 and item k tipo-celula-l != 4 [
+        let prob-nao-pegar 1.0
+        ask neighbors [
+          if item k fogo-l = 1 [
+            set prob-nao-pegar prob-nao-pegar * (1 - taxa-propagacao-fogo)
+          ]
+        ]
+        let prob-pegar 1 - prob-nao-pegar
+        if random-float 1.0 < prob-pegar [
+          set fogo-l replace-item k fogo-l 1
+          set temperatura-l replace-item k temperatura-l 200
+        ]
+      ]
+      if item k fogo-l = 1 [
+        set fumaca-l replace-item k fumaca-l (item k fumaca-l + 0.02)
+        if item k temperatura-l < 400 [
+          set temperatura-l replace-item k temperatura-l (item k temperatura-l + 2)
+        ]
+      ]
+      set k k + 1
+    ]
+  ]
+
+  ask patches with [
+    (pxcor = escada1-x and pycor = escada1-y) or
+    (pxcor = escada2-x and pycor = escada2-y)
+  ] [
+    let k 0
+    while [k < (num-andares - 1)] [
+      let fumaca-baixo item k fumaca-l
+      if fumaca-baixo > 0.01 [
+        let fumaca-cima item (k + 1) fumaca-l
+        let transfere fumaca-baixo * 0.15
+        set fumaca-l replace-item (k + 1) fumaca-l (fumaca-cima + transfere)
+      ]
+
+      let temp-baixo item k temperatura-l
+      let temp-cima item (k + 1) temperatura-l
+      if temp-baixo > temp-cima + 10 [
+        let transfere-temp (temp-baixo - temp-cima) * 0.08
+        set temperatura-l replace-item (k + 1) temperatura-l (temp-cima + transfere-temp)
+      ]
+
+      if item k fogo-l = 1 and item (k + 1) fogo-l = 0 [
+        let prob-vertical taxa-propagacao-fogo * 0.3
+        if random-float 1.0 < prob-vertical [
+          set fogo-l replace-item (k + 1) fogo-l 1
+          set temperatura-l replace-item (k + 1) temperatura-l 200
+          ask neighbors [
+            if item (k + 1) tipo-celula-l != 4 and item (k + 1) fogo-l = 0 [
+              if random-float 1.0 < (taxa-propagacao-fogo * 0.15) [
+                set fogo-l replace-item (k + 1) fogo-l 1
+                set temperatura-l replace-item (k + 1) temperatura-l 150
+              ]
+            ]
+          ]
+        ]
+      ]
+
+      set k k + 1
+    ]
+  ]
+
+  let k 0
+  while [k < (num-andares - 1)] [
+    let celulas-fogo-andar count patches with [item k fogo-l = 1]
+    if celulas-fogo-andar > 60 [
+      ask patches with [item k fogo-l = 1 and item (k + 1) fogo-l = 0 and item (k + 1) tipo-celula-l != 4] [
+        if random-float 1.0 < (taxa-propagacao-fogo * 0.05) [
+          set fogo-l replace-item (k + 1) fogo-l 1
+          set temperatura-l replace-item (k + 1) temperatura-l 180
+        ]
+      ]
+    ]
+    set k k + 1
+  ]
+end
+
+;; =========================================================================
+;; R6b — DIFUSÃO DA FUMAÇA
+;; =========================================================================
+to atualizar-fumaca
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      if item k tipo-celula-l != 4 [
+        let fumaca-atual item k fumaca-l
+        let soma-diff 0
+        ask neighbors [
+          if item k tipo-celula-l != 4 [
+            set soma-diff soma-diff + (item k fumaca-l - fumaca-atual)
+          ]
+        ]
+        let nova-fumaca fumaca-atual + coef-difusao-fumaca * soma-diff
+        set nova-fumaca max (list 0 nova-fumaca)
+        set nova-fumaca nova-fumaca * 0.998
+        set fumaca-l replace-item k fumaca-l nova-fumaca
+      ]
+      set k k + 1
+    ]
+  ]
+end
+
+;; =========================================================================
+;; R6a — VISIBILIDADE (Beer-Lambert)
+;; =========================================================================
+to atualizar-visibilidade
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      let fumaca item k fumaca-l
+      let vis v0-visib * exp (- gamma-ext * fumaca)
+      set visibilidade-l replace-item k visibilidade-l vis
+      set k k + 1
+    ]
+  ]
+end
+
+;; =========================================================================
+;; ATUALIZAR TEMPERATURA
+;; =========================================================================
+to atualizar-temperatura
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      if item k fogo-l = 0 and item k tipo-celula-l != 4 [
+        let temp-atual item k temperatura-l
+        let soma 0
+        let n-viz 0
+        ask neighbors [
+          if item k tipo-celula-l != 4 [
+            set soma soma + item k temperatura-l
+            set n-viz n-viz + 1
+          ]
+        ]
+        if n-viz > 0 [
+          let temp-media soma / n-viz
+          let nova-temp temp-atual + 0.1 * (temp-media - temp-atual)
+          set nova-temp nova-temp - 0.01 * (nova-temp - 20)
+          set temperatura-l replace-item k temperatura-l nova-temp
+        ]
+      ]
+      set k k + 1
+    ]
+  ]
+end
+
+;; =========================================================================
+;; ATUALIZAR PÂNICO
+;; =========================================================================
+to atualizar-panico
+  let meu-k meu-andar
+  let minha-fumaca 0
+  let minha-dens 0
+  ask patch-here [
+    set minha-fumaca item meu-k fumaca-l
+    set minha-dens count ocupantes-here with [
+      meu-andar = meu-k and estado = "ativo"
+    ]
+  ]
+  let delta-panico 0
+  if minha-fumaca > 0.1 [
+    set delta-panico delta-panico + 0.02
+  ]
+  if minha-dens > 3 [
+    set delta-panico delta-panico + 0.01
+  ]
+  if ticks-parado > deadlock-limite [
+    set delta-panico delta-panico + 0.02
+  ]
+  if usar-brigadistas? [
+    if any? brigadistas in-radius 3 with [meu-andar = meu-k] [
+      set delta-panico delta-panico - 0.03
+    ]
+  ]
+  set nivel-panico max (list 0 min (list 1 (nivel-panico + delta-panico)))
+end
+
+;; =========================================================================
+;; R3 — REPLANEJAR ROTA
+;; =========================================================================
+to replanejar-se-necessario
+  let precisa-replanejar false
+
+  ask patch alvo-x alvo-y [
+    let k [meu-andar] of myself
+    if item k fogo-l = 1 or
+       item k fumaca-l > 2.5 or
+       item k visibilidade-l < vis-min-trans [
+      set precisa-replanejar true
+    ]
+  ]
+
+  set memoria-ticks memoria-ticks + 1
+  if memoria-ticks >= 30 [
+    set precisa-replanejar true
+    set memoria-ticks 0
+  ]
+
+  if distancexy alvo-x alvo-y <= 1.5 [
+    set precisa-replanejar true
+  ]
+
+  if ticks-parado > deadlock-limite [
+    set precisa-replanejar true
+  ]
+
+  if perfil-conhec = 5 and random 100 < 10 [
+    set precisa-replanejar true
+  ]
+
+  if precisa-replanejar [
+    definir-alvo-inicial
+  ]
+end
+
+;; =========================================================================
+;; R5 — CALCULAR VELOCIDADE
+;; =========================================================================
+to calcular-velocidade
+  let meu-k meu-andar
+  let minha-fumaca 0
+  let minha-dens 0
+  ask patch-here [
+    set minha-fumaca item meu-k fumaca-l
+    set minha-dens count ocupantes-here with [
+      meu-andar = meu-k and estado = "ativo"
+    ]
+  ]
+  let fator-dens max (list 0.2 (1 - alpha-dens * minha-dens))
+  let s-val gamma-ext * minha-fumaca
+  let fator-fumaca max (list 0.3 (1 - beta-fumaca * s-val))
+  let fator-panico 1 + 0.2 * nivel-panico
+  set vel-atual max (list 0.25 (vel-max * fator-dens * fator-fumaca * fator-panico))
+end
+
+;; =========================================================================
+;; R4 — MOVER AGENTE
+;; =========================================================================
+to mover-agente
+  let passos 0
+  ifelse vel-atual >= 1.0 [
+    set passos 1
+  ] [
+    if random-float 1.0 < vel-atual [ set passos 1 ]
+  ]
+  if passos < 1 [ stop ]
+
+  let meu-k meu-andar
+  let na-escada false
+  ask patch-here [
+    if item meu-k tipo-celula-l = 2 [ set na-escada true ]
+  ]
+
+  if na-escada and meu-andar > 0 [
+    let andares-a-descer 0
+    let max-cascata 3
+    while [meu-andar > 0 and andares-a-descer < max-cascata] [
+      let andar-abaixo meu-andar - 1
+      let fogo-abaixo false
+      let fumaca-abaixo 0
+      ask patch-here [
+        if item andar-abaixo fogo-l = 1 [ set fogo-abaixo true ]
+        set fumaca-abaixo item andar-abaixo fumaca-l
+      ]
+      let seguro-descer true
+      if fogo-abaixo [ set seguro-descer false ]
+      if fumaca-abaixo > 4.0 and andar-abaixo > 0 [ set seguro-descer false ]
+
+      let agentes-na-escada count ocupantes-here with [
+        meu-andar = andar-abaixo and (estado = "ativo" or estado = "ferido")
+      ]
+
+      ifelse seguro-descer and agentes-na-escada < cap-escada [
+        set meu-andar meu-andar - 1
+        set andares-a-descer andares-a-descer + 1
+        set ticks-parado 0
+      ] [
+        set andares-a-descer max-cascata
+      ]
+    ]
+
+    if meu-andar = 0 [
+      let d1 distancexy saida1-x saida1-y
+      let d2 distancexy saida2-x saida2-y
+      ifelse d1 <= d2 [
+        set alvo-x saida1-x set alvo-y saida1-y
+      ] [
+        set alvo-x saida2-x set alvo-y saida2-y
+      ]
+      set alvo-andar 0
+    ]
+  ]
+
+  set meu-k meu-andar
+  let estou-no-terreo (meu-k = 0)
+  let em-deadlock (ticks-parado > deadlock-limite)
+  let meu-panico nivel-panico
+
+  let melhor-patch nobody
+  let melhor-dist 99999
+
+  ask neighbors [
+    let tipo-c item meu-k tipo-celula-l
+    let eh-saida (tipo-c = 3)
+    let eh-escada (tipo-c = 2)
+
+    let transitavel false
+    ifelse estou-no-terreo and eh-saida [
+      set transitavel true
+    ] [
+      if tipo-c != 4 and item meu-k fogo-l = 0 [
+        let vis-min ifelse-value (estou-no-terreo or em-deadlock or meu-panico > 0.6)
+                    [0.5] [vis-min-trans]
+        if item meu-k visibilidade-l >= vis-min [
+          set transitavel true
+        ]
+      ]
+    ]
+
+    if transitavel [
+      let dens-la count ocupantes-here with [
+        meu-andar = meu-k and (estado = "ativo" or estado = "ferido")
+      ]
+      let limite-dens ifelse-value eh-saida [999]
+                      [ifelse-value eh-escada [cap-escada * 2] [rho-bloq]]
+      if dens-la < limite-dens [
+        let delta-x pxcor - [alvo-x] of myself
+        let delta-y pycor - [alvo-y] of myself
+        let d-val sqrt (delta-x * delta-x + delta-y * delta-y)
+
+        let bonus 0
+        if eh-saida [ set bonus -100 ]
+        if eh-escada and [meu-andar] of myself > 0 [ set bonus -10 ]
+
+        let penalidade item meu-k fumaca-l * 2 + dens-la * 0.5 + bonus
+
+        if em-deadlock [
+          set penalidade penalidade + random-float 5
+        ]
+
+        let d-efetiva d-val + penalidade
+
+        if d-efetiva < melhor-dist [
+          set melhor-dist d-efetiva
+          set melhor-patch self
+        ]
+      ]
+    ]
+  ]
+
+  if melhor-patch != nobody [
+    let eh-destino-saida false
+    let eh-destino-escada false
+    ask melhor-patch [
+      if item meu-k tipo-celula-l = 3 [ set eh-destino-saida true ]
+      if item meu-k tipo-celula-l = 2 [ set eh-destino-escada true ]
+    ]
+    let cap-destino 999
+    if not eh-destino-saida and not eh-destino-escada [ set cap-destino 8 ]
+    let ocupantes-destino count [ocupantes-here with [
+      meu-andar = meu-k and (estado = "ativo" or estado = "ferido")
+    ]] of melhor-patch
+    if ocupantes-destino < cap-destino [
+      move-to melhor-patch
+      ask patch-here [
+        set acum-densidade-l replace-item meu-k acum-densidade-l
+          (item meu-k acum-densidade-l + 1)
+      ]
+    ]
+  ]
+end
+
+;; =========================================================================
+;; ATUALIZAR DEADLOCK
+;; =========================================================================
+to atualizar-deadlock
+  ifelse (xcor = ultimo-x) and (ycor = ultimo-y) [
+    set ticks-parado ticks-parado + 1
+  ] [
+    set ticks-parado 0
+  ]
+  set ultimo-x xcor
+  set ultimo-y ycor
+
+  if ticks-parado > (deadlock-limite * 4) [
+    let meu-k meu-andar
+    let escapes neighbors with [
+      item meu-k tipo-celula-l != 4 and
+      item meu-k fogo-l = 0
+    ]
+    if any? escapes [
+      move-to one-of escapes
+      set ticks-parado 0
+    ]
+  ]
+end
+
+;; =========================================================================
+;; R9 — CALCULAR FED
+;; =========================================================================
+to calcular-fed
+  let minha-fumaca 0
+  let minha-temp 20
+  ask patch-here [
+    set minha-fumaca item [meu-andar] of myself fumaca-l
+    set minha-temp item [meu-andar] of myself temperatura-l
+  ]
+  let delta-fed 0
+  if phi-lc50 > 0 [
+    set delta-fed minha-fumaca / phi-lc50
+  ]
+  if minha-temp > 60 [
+    set delta-fed delta-fed + ((minha-temp - 60) / 100) ^ 2
+  ]
+  set fed-valor fed-valor + delta-fed * 0.001
+end
+
+;; =========================================================================
+;; R9 — ATUALIZAR ESTADO
+;; =========================================================================
+to atualizar-estado-agente
+  let minha-temp 20
+  ask patch-here [
+    set minha-temp item [meu-andar] of myself temperatura-l
+  ]
+  if fed-valor >= 1.0 or minha-temp >= t-crit-morto [
+    set estado "morto"
+    set color gray
+    set shape "x"
+    stop
+  ]
+  if fed-valor >= 0.3 and estado = "ativo" [
+    set estado "ferido"
+    set color magenta
+    set vel-max vel-max * 0.5
+  ]
+end
+
+;; =========================================================================
+;; R10 — VERIFICAR EVACUAÇÃO
+;; =========================================================================
+to verificar-evacuacao
+  if meu-andar = 0 [
+    let evacuou false
+    ask patch-here [
+      if item 0 tipo-celula-l = 3 [ set evacuou true ]
+    ]
+    if not evacuou [
+      let saidas-proximas patches in-radius raio-evacuacao with [
+        item 0 tipo-celula-l = 3
+      ]
+      if any? saidas-proximas [
+        move-to min-one-of saidas-proximas [distance myself]
+        set evacuou true
+      ]
+    ]
+    if evacuou [
+      set estado "evacuado"
+      set tick-saida ticks
+      set hidden? true
+    ]
+  ]
+end
+
+;; =========================================================================
+;; BRIGADISTAS ORIENTAM
+;; =========================================================================
+to orientar-ocupantes
+  let ocupantes-proximos ocupantes in-radius 5 with [
+    meu-andar = [meu-andar] of myself and
+    estado = "ativo" and
+    ticks >= t-reacao
+  ]
+  ask ocupantes-proximos [
+    let esc1-risco 0
+    let esc2-risco 0
+    ask patch escada1-x escada1-y [
+      set esc1-risco item [meu-andar] of myself fumaca-l +
+                     (item [meu-andar] of myself fogo-l * 100)
+    ]
+    ask patch escada2-x escada2-y [
+      set esc2-risco item [meu-andar] of myself fumaca-l +
+                     (item [meu-andar] of myself fogo-l * 100)
+    ]
+    let dest-esc-x escada1-x
+    let dest-esc-y escada1-y
+    if esc1-risco > esc2-risco [
+      set dest-esc-x escada2-x
+      set dest-esc-y escada2-y
+    ]
+
+    let wp waypoint-saida-sala
+    ifelse wp = nobody [
+      set alvo-x dest-esc-x
+      set alvo-y dest-esc-y
+    ] [
+      set alvo-x item 0 wp
+      set alvo-y item 1 wp
+    ]
+    set alvo-andar meu-andar
+    set nivel-panico max (list 0 (nivel-panico - 0.05))
+  ]
+  set orientados orientados + count ocupantes-proximos
+end
+
+;; =========================================================================
+;; BRIGADISTA — TRANSIÇÃO PARA EVACUAÇÃO
+;; =========================================================================
+to verificar-transicao-evacuacao-brigadista
+  let k meu-andar
+  let restantes count ocupantes with [
+    meu-andar = k and (estado = "ativo" or estado = "ferido")
+  ]
+  if restantes = 0 [
+    set estado-brig "evacuando"
+    definir-alvo-brigadista
+  ]
+end
+
+;; =========================================================================
+;; BRIGADISTA — DEFINIR ALVO
+;; =========================================================================
+to definir-alvo-brigadista
+  let dest-x 0
+  let dest-y 0
+
+  ifelse meu-andar = 0 [
+    let risco-s1 0
+    let risco-s2 0
+    ask patch saida1-x saida1-y [
+      set risco-s1 item 0 fumaca-l + (item 0 fogo-l * 100)
+    ]
+    ask patch saida2-x saida2-y [
+      set risco-s2 item 0 fumaca-l + (item 0 fogo-l * 100)
+    ]
+    ifelse risco-s1 <= risco-s2 [
+      set dest-x saida1-x set dest-y saida1-y
+    ] [
+      set dest-x saida2-x set dest-y saida2-y
+    ]
+  ] [
+    let esc1-risco 0
+    let esc2-risco 0
+    ask patch escada1-x escada1-y [
+      set esc1-risco item [meu-andar] of myself fumaca-l +
+                     (item [meu-andar] of myself fogo-l * 100)
+    ]
+    ask patch escada2-x escada2-y [
+      set esc2-risco item [meu-andar] of myself fumaca-l +
+                     (item [meu-andar] of myself fogo-l * 100)
+    ]
+    ifelse esc1-risco <= esc2-risco [
+      set dest-x escada1-x set dest-y escada1-y
+    ] [
+      set dest-x escada2-x set dest-y escada2-y
+    ]
+  ]
+
+  let wp waypoint-saida-sala
+  ifelse wp = nobody [
+    set alvo-x-brig dest-x
+    set alvo-y-brig dest-y
+  ] [
+    set alvo-x-brig item 0 wp
+    set alvo-y-brig item 1 wp
+  ]
+end
+
+;; =========================================================================
+;; BRIGADISTA — FED E ESTADO
+;; =========================================================================
+to atualizar-fed-brigadista
+  let minha-fumaca 0
+  let minha-temp 20
+  ask patch-here [
+    set minha-fumaca item [meu-andar] of myself fumaca-l
+    set minha-temp item [meu-andar] of myself temperatura-l
+  ]
+  let delta-fed 0
+  if phi-lc50 > 0 [
+    set delta-fed minha-fumaca / phi-lc50
+  ]
+  if minha-temp > 60 [
+    set delta-fed delta-fed + ((minha-temp - 60) / 100) ^ 2
+  ]
+  set fed-valor-brig fed-valor-brig + delta-fed * 0.001 * 0.7
+end
+
+to atualizar-estado-brigadista
+  let minha-temp 20
+  ask patch-here [
+    set minha-temp item [meu-andar] of myself temperatura-l
+  ]
+  if fed-valor-brig >= 1.0 or minha-temp >= t-crit-morto [
+    set estado-brig "morto"
+    set color gray
+    set shape "x"
+  ]
+end
+
+;; =========================================================================
+;; BRIGADISTA — MOVIMENTO
+;; =========================================================================
+to mover-brigadista
+  if distancexy alvo-x-brig alvo-y-brig <= 1.5 [
+    definir-alvo-brigadista
+  ]
+
+  if ticks-parado-brig > deadlock-limite [
+    definir-alvo-brigadista
+  ]
+
+  let meu-k meu-andar
+  let na-escada false
+  ask patch-here [
+    if item meu-k tipo-celula-l = 2 [ set na-escada true ]
+  ]
+
+  if na-escada and meu-andar > 0 [
+    let max-cascata 3
+    let descidos 0
+    while [meu-andar > 0 and descidos < max-cascata] [
+      let andar-abaixo meu-andar - 1
+      let fogo-abaixo false
+      let fumaca-abaixo 0
+      ask patch-here [
+        if item andar-abaixo fogo-l = 1 [ set fogo-abaixo true ]
+        set fumaca-abaixo item andar-abaixo fumaca-l
+      ]
+      let seguro-descer true
+      if fogo-abaixo [ set seguro-descer false ]
+      if fumaca-abaixo > 4.0 and andar-abaixo > 0 [ set seguro-descer false ]
+
+      ifelse seguro-descer [
+        set meu-andar meu-andar - 1
+        set descidos descidos + 1
+        set ticks-parado-brig 0
+      ] [
+        set descidos max-cascata
+      ]
+    ]
+    if meu-andar = 0 [
+      let d1 distancexy saida1-x saida1-y
+      let d2 distancexy saida2-x saida2-y
+      ifelse d1 <= d2 [
+        set alvo-x-brig saida1-x set alvo-y-brig saida1-y
+      ] [
+        set alvo-x-brig saida2-x set alvo-y-brig saida2-y
+      ]
+    ]
+  ]
+
+  set meu-k meu-andar
+  let estou-no-terreo (meu-k = 0)
+  let em-deadlock (ticks-parado-brig > deadlock-limite)
+  let melhor-patch nobody
+  let melhor-dist 99999
+
+  ask neighbors [
+    let tipo-c item meu-k tipo-celula-l
+    let eh-saida (tipo-c = 3)
+    let eh-escada (tipo-c = 2)
+    let transitavel false
+    ifelse estou-no-terreo and eh-saida [
+      set transitavel true
+    ] [
+      if tipo-c != 4 and item meu-k fogo-l = 0 [
+        let vis-min ifelse-value (estou-no-terreo or em-deadlock) [0.5] [vis-min-trans]
+        if item meu-k visibilidade-l >= vis-min [
+          set transitavel true
+        ]
+      ]
+    ]
+    if transitavel [
+      let delta-x pxcor - [alvo-x-brig] of myself
+      let delta-y pycor - [alvo-y-brig] of myself
+      let d-val sqrt (delta-x * delta-x + delta-y * delta-y)
+      let bonus 0
+      if eh-saida [ set bonus -100 ]
+      if eh-escada and [meu-andar] of myself > 0 [ set bonus -10 ]
+      let penalidade item meu-k fumaca-l * 2 + bonus
+      if em-deadlock [
+        set penalidade penalidade + random-float 5
+      ]
+      let d-efetiva d-val + penalidade
+      if d-efetiva < melhor-dist [
+        set melhor-dist d-efetiva
+        set melhor-patch self
+      ]
+    ]
+  ]
+
+  if melhor-patch != nobody [
+    move-to melhor-patch
+  ]
+
+  ifelse (xcor = ultimo-x-brig) and (ycor = ultimo-y-brig) [
+    set ticks-parado-brig ticks-parado-brig + 1
+  ] [
+    set ticks-parado-brig 0
+  ]
+  set ultimo-x-brig xcor
+  set ultimo-y-brig ycor
+end
+
+;; =========================================================================
+;; BRIGADISTA — VERIFICAR EVACUAÇÃO
+;; =========================================================================
+to verificar-evacuacao-brigadista
+  if meu-andar = 0 [
+    let evacuou false
+    ask patch-here [
+      if item 0 tipo-celula-l = 3 [ set evacuou true ]
+    ]
+    if not evacuou [
+      let saidas-proximas patches in-radius raio-evacuacao with [
+        item 0 tipo-celula-l = 3
+      ]
+      if any? saidas-proximas [
+        move-to min-one-of saidas-proximas [distance myself]
+        set evacuou true
+      ]
+    ]
+    if evacuou [
+      set estado-brig "evacuado"
+      set tick-saida-brig ticks
+      set hidden? true
+    ]
+  ]
+end
+
+;; =========================================================================
+;; CONTADORES
+;; =========================================================================
+to atualizar-contadores
+  set n-evacuados count ocupantes with [estado = "evacuado"]
+  set n-feridos count ocupantes with [estado = "ferido"]
+  set n-mortos count ocupantes with [estado = "morto"]
+  set n-ativos count ocupantes with [estado = "ativo"]
+
+  if n-ativos = 0 and t-evacuacao = 0 [
+    set t-evacuacao ticks
+  ]
+
+  set area-fogo-total 0
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      if item k fogo-l = 1 [
+        set area-fogo-total area-fogo-total + 1
+      ]
+      set k k + 1
+    ]
+  ]
+end
+
+;; =========================================================================
+;; VISUALIZAÇÃO
+;; =========================================================================
+to atualizar-visualizacao
+  let k andar-exibido
+
+  ask patches [
+    let tipo item k tipo-celula-l
+    let tem-fogo item k fogo-l
+    let fumaca item k fumaca-l
+
+    ifelse tipo = 4 [
+      set pcolor gray - 2
+    ] [
+      ifelse tipo = 2 [
+        set pcolor green - 2
+      ] [
+        ifelse tipo = 3 [
+          set pcolor lime
+        ] [
+          ifelse tipo = 1 [
+            set pcolor white - 1
+          ] [
+            set pcolor white - 3
+          ]
+        ]
+      ]
+    ]
+
+    if tem-fogo = 1 [
+      set pcolor red + 1
+    ]
+
+    if fumaca > 0.05 and tem-fogo = 0 and tipo != 4 [
+      let intensidade min (list 6 (fumaca * 8))
+      set pcolor pcolor - intensidade
+    ]
+  ]
+
+  ask ocupantes [
+    ifelse meu-andar = k and estado != "evacuado" [
+      set hidden? false
+    ] [
+      set hidden? true
+    ]
+  ]
+  ask brigadistas [
+    ifelse meu-andar = k and estado-brig != "evacuado" [
+      set hidden? false
+    ] [
+      set hidden? true
+    ]
+  ]
+end
+
+;; =========================================================================
+;; VER — MONITOR DO SLIDER `andar-visualizar`  [NOVO em v3]
+;; ----------------------------------------------------------------------
+;; Esta procedure deve ser amarrada a um BOTÃO FOREVER chamado "Ver" na
+;; interface do NetLogo. Deixe-o LIGADO durante toda a sessão.
+;;
+;; Funcionamento:
+;;   - Se o usuário moveu o slider `andar-visualizar`, o valor de
+;;     `andar-exibido` (que rege o que é desenhado) ainda não foi
+;;     atualizado. Esta procedure detecta a divergência, sincroniza
+;;     e redesenha o andar.
+;;   - Se nada mudou, sai imediatamente (custo = 1 comparação inteira).
+;;   - Funciona INDEPENDENTE do botão `go` — útil para inspecionar o
+;;     edifício pausado ou antes de iniciar a simulação.
+;; =========================================================================
+to ver
+  if andar-exibido != andar-visualizar [
+    set andar-exibido andar-visualizar
+    atualizar-visualizacao
+    display
+  ]
+end
+
+;; =========================================================================
+;; REPORTERS
+;; =========================================================================
+to-report pct-evacuados
+  ifelse total-ocupantes > 0 [
+    report (n-evacuados / total-ocupantes) * 100
+  ] [
+    report 0
+  ]
+end
+
+to-report pct-feridos
+  ifelse total-ocupantes > 0 [
+    report (n-feridos / total-ocupantes) * 100
+  ] [
+    report 0
+  ]
+end
+
+to-report pct-mortos
+  ifelse total-ocupantes > 0 [
+    report (n-mortos / total-ocupantes) * 100
+  ] [
+    report 0
+  ]
+end
+
+to-report tempo-medio-evacuacao
+  let evac-agents ocupantes with [estado = "evacuado" and tick-saida > 0]
+  ifelse any? evac-agents [
+    report mean [tick-saida] of evac-agents
+  ] [
+    report 0
+  ]
+end
+
+to-report fed-medio
+  let ativos-agentes ocupantes with [estado != "evacuado"]
+  ifelse any? ativos-agentes [
+    report mean [fed-valor] of ativos-agentes
+  ] [
+    report 0
+  ]
+end
+
+to-report panico-medio
+  let ativos-agentes ocupantes with [estado = "ativo"]
+  ifelse any? ativos-agentes [
+    report mean [nivel-panico] of ativos-agentes
+  ] [
+    report 0
+  ]
+end
+
+to-report n-deadlocked
+  report count ocupantes with [
+    (estado = "ativo" or estado = "ferido") and
+    ticks-parado > deadlock-limite
+  ]
+end
+
+;; =========================================================================
+;; REPORTERS DE BRIGADISTAS
+;; =========================================================================
+to-report n-brigadistas-evacuados
+  report count brigadistas with [estado-brig = "evacuado"]
+end
+
+to-report n-brigadistas-mortos
+  report count brigadistas with [estado-brig = "morto"]
+end
+
+to-report n-brigadistas-ativos
+  report count brigadistas with [
+    estado-brig = "orientando" or estado-brig = "evacuando"
+  ]
+end
+
+to-report n-brigadistas-evacuando
+  report count brigadistas with [estado-brig = "evacuando"]
+end
+]]></code>
+  <widgets>
+    <view x="425" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="0" height="504" showTickCounter="true" patchSize="25.0" fontSize="10" wrappingAllowedY="false" width="504" tickCounterLabel="ticks" maxPycor="19" updateMode="1" maxPxcor="19" minPxcor="0"></view>
+    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="0.0" variable="andar-visualizar"></slider>
+    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="22.0" variable="andar-fogo"></slider>
+    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="55.0" variable="ocupantes-por-andar"></slider>
+    <slider x="15" step="0.01" y="200" max="0.15" width="250" display="taxa-propagacao-fogo" height="50" min="0.01" direction="Horizontal" default="0.02" variable="taxa-propagacao-fogo"></slider>
+    <slider x="15" step="0.05" y="260" max="0.50" width="250" display="coef-difusao-fumaca" height="50" min="0.05" direction="Horizontal" default="0.1" variable="coef-difusao-fumaca"></slider>
+    <switch x="10" y="325" height="40" on="true" variable="usar-brigadistas?" width="120" display="usar-brigadistas?"></switch>
+    <button x="145" y="325" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="55" display="Setup">setup</button>
+    <button x="215" y="325" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55" display="Go">go</button>
+    <monitor x="285" precision="0" y="20" height="60" fontSize="11" width="100" display="Ticks">ticks</monitor>
+    <monitor x="285" precision="0" y="90" height="60" fontSize="11" width="100" display="Ativos">n-ativos</monitor>
+    <monitor x="285" precision="0" y="165" height="60" fontSize="11" width="100" display="Evacuados">n-evacuados</monitor>
+    <monitor x="285" precision="0" y="235" height="60" fontSize="11" width="100" display="Feridos">n-feridos</monitor>
+    <monitor x="285" precision="0" y="310" height="60" fontSize="11" width="100" display="Mortos">n-mortos</monitor>
+    <monitor x="285" precision="1" y="380" height="60" fontSize="11" width="100" display="T Médio Saída">tempo-medio-evacuacao</monitor>
+  </widgets>
+  <info>## WHAT IS IT?
+
+(a general understanding of what the model is trying to show or explain)
+
+## HOW IT WORKS
+
+(what rules the agents use to create the overall behavior of the model)
+
+## HOW TO USE IT
+
+(how to use the model, including a description of each of the items in the Interface tab)
+
+## THINGS TO NOTICE
+
+(suggested things for the user to notice while running the model)
+
+## THINGS TO TRY
+
+(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+
+## EXTENDING THE MODEL
+
+(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+
+## NETLOGO FEATURES
+
+(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+
+## RELATED MODELS
+
+(models in the NetLogo Models Library and elsewhere which are of related interest)
+
+## CREDITS AND REFERENCES
+
+(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)
+</info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="sheep" rotatable="false" editableColorIndex="15">
+      <circle x="203" y="65" marked="true" color="-1" diameter="88" filled="true"></circle>
+      <circle x="70" y="65" marked="true" color="-1" diameter="162" filled="true"></circle>
+      <circle x="150" y="105" marked="true" color="-1" diameter="120" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="218" y="120"></point>
+        <point x="240" y="165"></point>
+        <point x="255" y="165"></point>
+        <point x="278" y="120"></point>
+      </polygon>
+      <circle x="214" y="72" marked="false" color="-1920102913" diameter="67" filled="true"></circle>
+      <rectangle endX="179" startY="223" marked="true" color="-1" endY="298" startX="164" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="45" y="285"></point>
+        <point x="30" y="285"></point>
+        <point x="30" y="240"></point>
+        <point x="15" y="195"></point>
+        <point x="45" y="210"></point>
+      </polygon>
+      <circle x="3" y="83" marked="true" color="-1" diameter="150" filled="true"></circle>
+      <rectangle endX="80" startY="221" marked="true" color="-1" endY="296" startX="65" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="195" y="285"></point>
+        <point x="210" y="285"></point>
+        <point x="210" y="240"></point>
+        <point x="240" y="210"></point>
+        <point x="195" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="276" y="85"></point>
+        <point x="285" y="105"></point>
+        <point x="302" y="99"></point>
+        <point x="294" y="83"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="219" y="85"></point>
+        <point x="210" y="105"></point>
+        <point x="193" y="99"></point>
+        <point x="201" y="83"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="wolf" rotatable="false" editableColorIndex="0">
+      <polygon color="255" filled="true" marked="false">
+        <point x="253" y="133"></point>
+        <point x="245" y="131"></point>
+        <point x="245" y="133"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="2" y="194"></point>
+        <point x="13" y="197"></point>
+        <point x="30" y="191"></point>
+        <point x="38" y="193"></point>
+        <point x="38" y="205"></point>
+        <point x="20" y="226"></point>
+        <point x="20" y="257"></point>
+        <point x="27" y="265"></point>
+        <point x="38" y="266"></point>
+        <point x="40" y="260"></point>
+        <point x="31" y="253"></point>
+        <point x="31" y="230"></point>
+        <point x="60" y="206"></point>
+        <point x="68" y="198"></point>
+        <point x="75" y="209"></point>
+        <point x="66" y="228"></point>
+        <point x="65" y="243"></point>
+        <point x="82" y="261"></point>
+        <point x="84" y="268"></point>
+        <point x="100" y="267"></point>
+        <point x="103" y="261"></point>
+        <point x="77" y="239"></point>
+        <point x="79" y="231"></point>
+        <point x="100" y="207"></point>
+        <point x="98" y="196"></point>
+        <point x="119" y="201"></point>
+        <point x="143" y="202"></point>
+        <point x="160" y="195"></point>
+        <point x="166" y="210"></point>
+        <point x="172" y="213"></point>
+        <point x="173" y="238"></point>
+        <point x="167" y="251"></point>
+        <point x="160" y="248"></point>
+        <point x="154" y="265"></point>
+        <point x="169" y="264"></point>
+        <point x="178" y="247"></point>
+        <point x="186" y="240"></point>
+        <point x="198" y="260"></point>
+        <point x="200" y="271"></point>
+        <point x="217" y="271"></point>
+        <point x="219" y="262"></point>
+        <point x="207" y="258"></point>
+        <point x="195" y="230"></point>
+        <point x="192" y="198"></point>
+        <point x="210" y="184"></point>
+        <point x="227" y="164"></point>
+        <point x="242" y="144"></point>
+        <point x="259" y="145"></point>
+        <point x="284" y="151"></point>
+        <point x="277" y="141"></point>
+        <point x="293" y="140"></point>
+        <point x="299" y="134"></point>
+        <point x="297" y="127"></point>
+        <point x="273" y="119"></point>
+        <point x="270" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="-1" y="195"></point>
+        <point x="14" y="180"></point>
+        <point x="36" y="166"></point>
+        <point x="40" y="153"></point>
+        <point x="53" y="140"></point>
+        <point x="82" y="131"></point>
+        <point x="134" y="133"></point>
+        <point x="159" y="126"></point>
+        <point x="188" y="115"></point>
+        <point x="227" y="108"></point>
+        <point x="236" y="102"></point>
+        <point x="238" y="98"></point>
+        <point x="268" y="86"></point>
+        <point x="269" y="92"></point>
+        <point x="281" y="87"></point>
+        <point x="269" y="103"></point>
+        <point x="269" y="113"></point>
+      </polygon>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+</model>
