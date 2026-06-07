@@ -1,17 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<model version="NetLogo 7.0.4" snapToGrid="true">
+<model version="NetLogo 7.0.3" snapToGrid="true">
   <code><![CDATA[;; ==========================================================================
 ;; SIMULAÇÃO DE EVACUAÇÃO EMERGENCIAL SOB INCÊNDIO
 ;; Edifício de 30 Andares — Formalismo ABM (Guilherme & Lucas)
-;; NetLogo 7.1 — VERSÃO REVISADA (v3)
+;; NetLogo 7.1 — VERSÃO REVISADA (v4)
 ;;
-;; MUDANÇAS vs v2:
-;;   [V3-A] Nova procedure `ver`: sincroniza `andar-exibido` com o slider
-;;          `andar-visualizar` mesmo com o `go` pausado. Acoplar a um
-;;          botão FOREVER chamado "Ver" na interface.
-;;   [V3-B] `criar-ocupantes` agora garante NO MÁXIMO 1 agente por célula
-;;          no setup. Filtra patches já ocupados no andar e exclui as
-;;          saídas (tipo = 3) para evitar evacuação imediata no spawn.
+;; MUDANÇAS vs v3:
+;;   [V4-A] calcular-fed: fator de acúmulo aumentado de 0.001 -> 0.005
+;;          para que a fumaça acumule FED suficiente em tempo real.
+;;   [V4-B] atualizar-estado-agente: verificação de "ferido" movida
+;;          para ANTES de "morto", permitindo que agentes passem pelo
+;;          estado intermediário antes de morrer.
+;;   [V4-C] Limiar de ferido ajustado de 0.3 -> 0.08, criando uma
+;;          janela realista de exposição moderada.
+;;
+;; MUDANÇAS vs v2 (mantidas em v3):
+;;   [V3-A] Procedure `ver`: sincroniza `andar-exibido` com o slider
+;;   [V3-B] `criar-ocupantes` garante NO MÁXIMO 1 agente por célula
 ;;
 ;; MUDANÇAS PRÉVIAS (v2 vs v1):
 ;;   [1] Movimento determinístico por "passos por tick"
@@ -266,10 +271,7 @@ to inicializar-edificio
 end
 
 ;; =========================================================================
-;; CRIAR OCUPANTES  [MODIFICADO em v3]
-;; - Garante 1 agente por célula (filtro `not any? ocupantes-here`)
-;; - Exclui saídas (tipo = 3) para evitar evacuação imediata no spawn
-;; - Aborta com aviso se não há células livres suficientes no andar
+;; CRIAR OCUPANTES  [v3: garante 1 agente por célula, exclui saídas]
 ;; =========================================================================
 to criar-ocupantes
   let k 0
@@ -338,12 +340,10 @@ to criar-ocupantes
           ]
         ]
       ] [
-        ;; Não há mais células livres neste andar — aborta o loop interno
-        ;; com aviso. O usuário viu "Ativos < total esperado" no monitor.
         user-message (word
           "Aviso: andar " k " saturado. Foram alocados "
           i " de " n-por-andar " ocupantes solicitados.")
-        set i n-por-andar  ;; força saída do while interno
+        set i n-por-andar
       ]
       set i i + 1
     ]
@@ -355,10 +355,10 @@ end
 ;; WAYPOINT-SAIDA-SALA
 ;; =========================================================================
 to-report waypoint-saida-sala
-  if pxcor <= 6  and pycor <= 4  [ report (list 5  5)  ]   ;; SW -> porta (5,5)
-  if pxcor <= 6  and pycor >= 16 [ report (list 5  15) ]   ;; NW -> porta (5,15)
-  if pxcor >= 14 and pycor <= 4  [ report (list 15 5)  ]   ;; SE -> porta (15,5)
-  if pxcor >= 14 and pycor >= 16 [ report (list 15 15) ]   ;; NE -> porta (15,15)
+  if pxcor <= 6  and pycor <= 4  [ report (list 5  5)  ]
+  if pxcor <= 6  and pycor >= 16 [ report (list 5  15) ]
+  if pxcor >= 14 and pycor <= 4  [ report (list 15 5)  ]
+  if pxcor >= 14 and pycor >= 16 [ report (list 15 15) ]
   if pxcor >= 8 and pxcor <= 12 and pycor >= 16 [ report (list 10 15) ]
   if pxcor >= 8 and pxcor <= 12 and pycor <= 4  [ report (list 10 5)  ]
   report nobody
@@ -926,6 +926,9 @@ end
 
 ;; =========================================================================
 ;; R9 — CALCULAR FED
+;; [V4-A] Fator de acúmulo corrigido: 0.001 -> 0.005
+;;        Isso permite que agentes em zonas de fumaça densa acumulem
+;;        FED suficiente para ficar feridos (>= 0.08) antes de evacuar.
 ;; =========================================================================
 to calcular-fed
   let minha-fumaca 0
@@ -941,27 +944,37 @@ to calcular-fed
   if minha-temp > 60 [
     set delta-fed delta-fed + ((minha-temp - 60) / 100) ^ 2
   ]
-  set fed-valor fed-valor + delta-fed * 0.001
+  ;; [V4-A] era 0.001 — muito pequeno para atingir limiar de ferido em tempo real
+  set fed-valor fed-valor + delta-fed * 0.005
 end
 
 ;; =========================================================================
 ;; R9 — ATUALIZAR ESTADO
+;; [V4-B] Ordem das verificações invertida: ferido ANTES de morto.
+;;        Antes, a checagem de morte vinha primeiro, fazendo agentes
+;;        morrerem sem nunca passarem pelo estado "ferido".
+;; [V4-C] Limiar de ferido ajustado de 0.3 -> 0.08 para capturar
+;;        exposições moderadas à fumaça.
 ;; =========================================================================
 to atualizar-estado-agente
   let minha-temp 20
   ask patch-here [
     set minha-temp item [meu-andar] of myself temperatura-l
   ]
+
+  ;; [V4-B] + [V4-C] — ferido PRIMEIRO (limiar reduzido de 0.3 para 0.08)
+  if fed-valor >= 0.08 and estado = "ativo" [
+    set estado "ferido"
+    set color magenta
+    set vel-max vel-max * 0.5
+  ]
+
+  ;; morte verificada DEPOIS, permitindo a transição ativo -> ferido -> morto
   if fed-valor >= 1.0 or minha-temp >= t-crit-morto [
     set estado "morto"
     set color gray
     set shape "x"
     stop
-  ]
-  if fed-valor >= 0.3 and estado = "ativo" [
-    set estado "ferido"
-    set color magenta
-    set vel-max vel-max * 0.5
   ]
 end
 
@@ -1112,7 +1125,8 @@ to atualizar-fed-brigadista
   if minha-temp > 60 [
     set delta-fed delta-fed + ((minha-temp - 60) / 100) ^ 2
   ]
-  set fed-valor-brig fed-valor-brig + delta-fed * 0.001 * 0.7
+  ;; Brigadistas têm equipamento de proteção: fator 0.7 sobre o acúmulo base
+  set fed-valor-brig fed-valor-brig + delta-fed * 0.005 * 0.7
 end
 
 to atualizar-estado-brigadista
@@ -1339,19 +1353,8 @@ to atualizar-visualizacao
 end
 
 ;; =========================================================================
-;; VER — MONITOR DO SLIDER `andar-visualizar`  [NOVO em v3]
-;; ----------------------------------------------------------------------
-;; Esta procedure deve ser amarrada a um BOTÃO FOREVER chamado "Ver" na
-;; interface do NetLogo. Deixe-o LIGADO durante toda a sessão.
-;;
-;; Funcionamento:
-;;   - Se o usuário moveu o slider `andar-visualizar`, o valor de
-;;     `andar-exibido` (que rege o que é desenhado) ainda não foi
-;;     atualizado. Esta procedure detecta a divergência, sincroniza
-;;     e redesenha o andar.
-;;   - Se nada mudou, sai imediatamente (custo = 1 comparação inteira).
-;;   - Funciona INDEPENDENTE do botão `go` — útil para inspecionar o
-;;     edifício pausado ou antes de iniciar a simulação.
+;; VER — sincroniza slider `andar-visualizar` com `andar-exibido`
+;; Acoplar a um botão FOREVER "Ver" na interface.
 ;; =========================================================================
 to ver
   if andar-exibido != andar-visualizar [
@@ -1445,10 +1448,10 @@ end
 ]]></code>
   <widgets>
     <view x="425" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="0" height="504" showTickCounter="true" patchSize="25.0" fontSize="10" wrappingAllowedY="false" width="504" tickCounterLabel="ticks" maxPycor="19" updateMode="1" maxPxcor="19" minPxcor="0"></view>
-    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="22.0" variable="andar-visualizar"></slider>
-    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="22.0" variable="andar-fogo"></slider>
-    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="55.0" variable="ocupantes-por-andar"></slider>
-    <slider x="15" step="0.01" y="200" max="0.15" width="250" display="taxa-propagacao-fogo" height="50" min="0.01" direction="Horizontal" default="0.02" variable="taxa-propagacao-fogo"></slider>
+    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="3.0" variable="andar-visualizar"></slider>
+    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="11.0" variable="andar-fogo"></slider>
+    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="65.0" variable="ocupantes-por-andar"></slider>
+    <slider x="15" step="0.01" y="200" max="0.15" width="250" display="taxa-propagacao-fogo" height="50" min="0.01" direction="Horizontal" default="0.03" variable="taxa-propagacao-fogo"></slider>
     <slider x="15" step="0.05" y="260" max="0.50" width="250" display="coef-difusao-fumaca" height="50" min="0.05" direction="Horizontal" default="0.1" variable="coef-difusao-fumaca"></slider>
     <switch x="10" y="325" height="40" on="true" variable="usar-brigadistas?" width="120" display="usar-brigadistas?"></switch>
     <button x="145" y="325" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="55" display="Setup">setup</button>
