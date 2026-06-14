@@ -570,7 +570,7 @@ to atualizar-fogo
       ]
 
       if item k fogo-l = 1 and item (k + 1) fogo-l = 0 [
-        let prob-vertical taxa-propagacao-fogo * 0.3
+        let prob-vertical taxa-propagacao-fogo * 0.05
         if random-float 1.0 < prob-vertical [
           set fogo-l replace-item (k + 1) fogo-l 1
           set temperatura-l replace-item (k + 1) temperatura-l 200
@@ -1448,10 +1448,10 @@ end
 ]]></code>
   <widgets>
     <view x="425" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="0" height="504" showTickCounter="true" patchSize="25.0" fontSize="10" wrappingAllowedY="false" width="504" tickCounterLabel="ticks" maxPycor="19" updateMode="1" maxPxcor="19" minPxcor="0"></view>
-    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="3.0" variable="andar-visualizar"></slider>
-    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="11.0" variable="andar-fogo"></slider>
-    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="65.0" variable="ocupantes-por-andar"></slider>
-    <slider x="15" step="0.01" y="200" max="0.15" width="250" display="taxa-propagacao-fogo" height="50" min="0.01" direction="Horizontal" default="0.03" variable="taxa-propagacao-fogo"></slider>
+    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="15.0" variable="andar-visualizar"></slider>
+    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="15.0" variable="andar-fogo"></slider>
+    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="35.0" variable="ocupantes-por-andar"></slider>
+    <slider x="15" step="0.01" y="200" max="0.15" width="250" display="taxa-propagacao-fogo" height="50" min="0.01" direction="Horizontal" default="0.02" variable="taxa-propagacao-fogo"></slider>
     <slider x="15" step="0.05" y="260" max="0.50" width="250" display="coef-difusao-fumaca" height="50" min="0.05" direction="Horizontal" default="0.1" variable="coef-difusao-fumaca"></slider>
     <switch x="10" y="325" height="40" on="true" variable="usar-brigadistas?" width="120" display="usar-brigadistas?"></switch>
     <button x="145" y="325" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="55" display="Setup">setup</button>
