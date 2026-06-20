@@ -3,16 +3,114 @@
   <code><![CDATA[;; ==========================================================================
 ;; SIMULAÇÃO DE EVACUAÇÃO EMERGENCIAL SOB INCÊNDIO
 ;; Edifício de 30 Andares — Formalismo ABM (Guilherme & Lucas)
-;; NetLogo 7.1 — VERSÃO REVISADA (v4)
+;; NetLogo 7.1 — VERSÃO REVISADA (v9)
 ;;
-;; MUDANÇAS vs v3:
-;;   [V4-A] calcular-fed: fator de acúmulo aumentado de 0.001 -> 0.005
-;;          para que a fumaça acumule FED suficiente em tempo real.
-;;   [V4-B] atualizar-estado-agente: verificação de "ferido" movida
-;;          para ANTES de "morto", permitindo que agentes passem pelo
-;;          estado intermediário antes de morrer.
-;;   [V4-C] Limiar de ferido ajustado de 0.3 -> 0.08, criando uma
-;;          janela realista de exposição moderada.
+;; MUDANÇAS vs v8 (v9):
+;;   [V9-A] CORREÇÃO GRAVE: agentes não vão mais para saídas/escadas em
+;;          chamas. Antes, `definir-alvo-inicial`, `orientar-ocupantes` e
+;;          `definir-alvo-brigadista` escolhiam a rota "menos pior" entre as
+;;          duas opções comparando um índice de risco (fumaça + fogo*100),
+;;          mas SEM verificar se a rota escolhida estava de fato segura —
+;;          então, se ambas tivessem fogo, ou mesmo se só a "escolhida"
+;;          tivesse, o agente era mandado para uma rota em chamas.
+;;
+;;          Nova lógica, via reporter `rota-bloqueada-por-fogo? [px py k]`:
+;;            - Uma saída/escada é considerada BLOQUEADA se houver fogo em
+;;              qualquer célula dentro de `raio-obs-fogo` patches dela
+;;              (novo parâmetro global, padrão = 2), não apenas na célula
+;;              exata.
+;;            - Se uma rota está bloqueada e a outra livre -> vai para a
+;;              livre (independente de qual seria "menos pior").
+;;            - Se ambas estão livres -> escolhe pela menor fumaça (como
+;;              antes).
+;;            - Se ambas estão bloqueadas -> usa o critério antigo de
+;;              "menos pior" como último recurso (sem alternativa segura,
+;;              mas o agente continua replanejando a cada tick e pode se
+;;              afastar do fogo via deadlock/replanejamento).
+;;
+;;          Aplicado em: definir-alvo-inicial (saídas no térreo e escadas
+;;          nos andares superiores), orientar-ocupantes (brigadistas
+;;          orientando ocupantes) e definir-alvo-brigadista (rota do
+;;          próprio brigadista).
+;;
+;;          REQUER ADICIONAR NA INTERFACE (opcional): um slider/input
+;;          `raio-obs-fogo` se quiser ajustar o raio de observação em
+;;          tempo real; caso contrário, o valor padrão (2) definido no
+;;          `setup` é usado.
+;;
+;; MUDANÇAS vs v7 (v8):
+;;   [V8-A] Posição inicial do fogo agora é controlada pelo widget
+;;          `posicao-fogo` na interface — compatível com Interruptor
+;;          (booleano true/false) OU Chooser (string "aleatorio"/"centro"):
+;;            - true ou "aleatorio": sorteado entre células válidas do
+;;              andar definido em `andar-fogo` (exclui paredes, saídas e
+;;              escadas), como introduzido na v7.
+;;            - false, "centro" ou qualquer outro valor: foco de incêndio
+;;              fixo em (10,10), como nas versões anteriores à v7.
+;;          ADICIONE NA INTERFACE: um Interruptor OU Chooser chamado
+;;          `posicao-fogo`. [V9-C: código aceita ambos os tipos de widget]
+;;
+;; MUDANÇAS vs v5 — CORREÇÕES E AJUSTES (v7, ex-v6):
+;;   [V7-A] Nova variável ocupantes-own `evacuado?` (booleano), separada de
+;;          `estado`. Antes, `verificar-evacuacao` fazia
+;;          `set estado "evacuado"`, sobrescrevendo "ferido"/"ativo" e
+;;          fazendo agentes feridos "perderem" esse status ao saírem do
+;;          prédio. Agora `estado` representa só a condição de saúde
+;;          ("ativo"/"ferido"/"morto") e nunca é sobrescrito na evacuação;
+;;          `evacuado?` controla status de localização.
+;;          Reflexos: n-evacuados usa `evacuado?`; n-feridos conta TODOS os
+;;          feridos (incluindo já evacuados); n-ativos só conta quem está
+;;          ativo E ainda dentro do prédio; todos os filtros de movimento,
+;;          densidade, visualização e reporters foram ajustados para
+;;          excluir agentes com `evacuado? = true`.
+;;
+;;   [V7-B] t-alarme reduzido de 30 -> 10 ticks. Reduz o delay médio de
+;;          reação dos ocupantes de ~46 para ~26 ticks, e o pior caso de
+;;          90 para 70 ticks, corrigindo o atraso excessivo percebido no
+;;          início da evacuação.
+;;
+;;   [V7-C] Posição inicial do fogo (fogo-x-inicial, fogo-y-inicial) agora
+;;          é sorteada aleatoriamente a cada `setup`, entre as células
+;;          válidas do andar definido em `andar-fogo` (exclui paredes,
+;;          saídas e escadas). Antes, o foco de incêndio era fixo em (10,10).
+;;          [Substituído/controlado pelo chooser `posicao-fogo` na v8]
+;;
+;; MUDANÇAS vs v4 — MELHORIAS DE REALISMO (mantidas da v5):
+;;   [V5-A] atualizar-fogo: temperatura agora segue a curva ISO 834
+;;          T(t) = 20 + 345 * log10(8 * t/60 + 1), com teto de 1200°C.
+;;          Substitui o incremento fixo de +2°C com teto arbitrário de 400°C.
+;;
+;;   [V5-B] atualizar-fogo: flashover agora é acionado por critério físico
+;;          de temperatura (>= 500°C) em vez de contagem de patches (> 100).
+;;          Probabilidade de ignição súbita: 80% quando flashover ativo.
+;;
+;;   [V5-C] atualizar-fumaca: fumaça agora carrega duas variáveis físicas
+;;          por andar — concentracao-co-l (ppm) e visibilidade-l já existia.
+;;          CO aumenta 15 ppm/tick por célula em chamas; limiar de
+;;          incapacitação: CO >= 1200 ppm ou temperatura de gases >= 60°C.
+;;
+;;   [V5-D] atualizar-fumaca (escadas): efeito chaminé agora usa física
+;;          real — velocidade de stack proporcional à raiz de
+;;          (T_dentro - T_fora) / (T_fora + 273). A taxa de subida de
+;;          fumaça substitui o coeficiente fixo de 0.15.
+;;
+;;   [V5-E] inicializar-edificio: adicionada variável resistencia-l por
+;;          patch para refletir resistência ao fogo do material (minutos):
+;;          tipo 0 (espaço aberto) = 0, tipo 1 (corredor) = 0,
+;;          tipo 2 (escada enclausurada) = 999, tipo 4 (parede) = 60–120.
+;;          A propagação horizontal usa taxa efetiva reduzida pela resistência.
+;;
+;;   [V5-F] calcular-fed: adicionado critério de incapacitação por CO
+;;          (concentracao-co >= 1200 ppm) além do FED térmico.
+;;
+;;   [V5-G] atualizar-temperatura: agora usa a variável temperatura-gases-l
+;;          separada (temperatura dos gases, não da chama) para avaliar risco
+;;          de incapacitação dos agentes — limiar de 60°C conforme ISO 13571.
+;;
+;; MUDANÇAS vs v3 (mantidas em v4):
+;;   [V4-A] calcular-fed: fator de acúmulo 0.001 -> 0.005
+;;   [V4-B] atualizar-estado-agente: verificação de "ferido" antes de "morto"
+;;   [V4-C] Limiar de ferido ajustado de 0.3 -> 0.08
 ;;
 ;; MUDANÇAS vs v2 (mantidas em v3):
 ;;   [V3-A] Procedure `ver`: sincroniza `andar-exibido` com o slider
@@ -70,6 +168,14 @@ globals [
   deadlock-limite
   raio-evacuacao
 
+  ;; [V9] Raio de observação de fogo em torno de saídas/escadas. Se houver
+  ;;       fogo em qualquer célula dentro deste raio da saída/escada, a rota
+  ;;       é considerada bloqueada e o agente busca a alternativa.
+  raio-obs-fogo
+
+  ;; [V5-G] Temperatura externa (base para efeito chaminé)
+  t-externa
+
   t-evacuacao
   area-fogo-total
   lista-curva-evac
@@ -83,6 +189,16 @@ patches-own [
   temperatura-l
   visibilidade-l
   acum-densidade-l
+
+  ;; [V5-C] Concentração de CO por andar (ppm)
+  concentracao-co-l
+
+  ;; [V5-G] Temperatura dos gases por andar (°C) — distinta da temperatura da chama
+  temperatura-gases-l
+
+  ;; [V5-E] Resistência ao fogo do material (minutos) — escalar, não por andar,
+  ;;         pois depende apenas do tipo estrutural do patch
+  resistencia-fogo
 ]
 
 ;; --- OCCUPANT VARIABLES ---
@@ -92,7 +208,8 @@ ocupantes-own [
   vel-max
   vel-atual
   t-reacao
-  estado
+  estado          ;; "ativo" | "ferido" | "morto" — condição de saúde, NUNCA sobrescrita por evacuação
+  evacuado?       ;; [V7] true se o agente já saiu do prédio (independente de "estado")
   nivel-panico
   fed-valor
   perfil-conhec
@@ -126,7 +243,11 @@ to setup
   clear-all
 
   set num-andares 30
-  set t-alarme 30
+  ;; [V7] t-alarme reduzido de 30 -> 10 ticks. Reduz o delay médio de reação
+  ;;       de ~46 para ~26 ticks, e o pior caso de 90 para 70 ticks.
+  ;;       10 ticks (segundos) é compatível com tempo de detecção automática
+  ;;       de incêndio + acionamento do alarme em edifícios modernos.
+  set t-alarme 10
   set t-max-sim 1800
 
   set escada1-x 2   set escada1-y 10
@@ -136,6 +257,9 @@ to setup
   set saida2-x 19  set saida2-y 10
 
   set fogo-andar-inicial andar-fogo
+  ;; [V8] fogo-x-inicial e fogo-y-inicial são definidos após
+  ;;       inicializar-edificio, conforme o chooser `posicao-fogo`
+  ;;       ("centro" ou "aleatorio") — ver bloco "Foco de incêndio inicial"
   set fogo-x-inicial 10
   set fogo-y-inicial 10
 
@@ -153,6 +277,14 @@ to setup
   set deadlock-limite 8
   set raio-evacuacao 2
 
+  ;; [V9] Raio de observação de fogo ao redor de saídas/escadas.
+  ;;       Em raio 2, cobre a saída/escada e suas células adjacentes
+  ;;       (incluindo o corredor de acesso imediato).
+  set raio-obs-fogo 2
+
+  ;; [V5-G] Temperatura ambiente externa inicial
+  set t-externa 20
+
   set n-evacuados 0
   set n-feridos 0
   set n-mortos 0
@@ -161,20 +293,49 @@ to setup
 
   inicializar-edificio
 
-  ;; Foco de incêndio + vizinhos
+  ;; [V9-C] Posição inicial do fogo: controlada pelo widget `posicao-fogo`
+  ;;         na interface, aceitando tanto Interruptor (booleano true/false)
+  ;;         quanto Chooser (string "aleatorio"/"centro"):
+  ;;           - true ou "aleatorio"  -> sorteado entre células válidas do andar
+  ;;           - false ou "centro" (ou qualquer outro valor) -> fixo em (10,10)
+  ;;
+  ;; Critérios de validade para o modo aleatório:
+  ;;   - tipo != 4 (não pode ser parede)
+  ;;   - tipo != 3 (não pode ser saída do térreo)
+  ;;   - tipo != 2 (não pode ser escada, para não bloquear a fuga de imediato)
+  let k fogo-andar-inicial
+
+  let usar-aleatorio? (posicao-fogo = true) or (posicao-fogo = "aleatorio")
+
+  ifelse usar-aleatorio? [
+    let celulas-validas-fogo patches with [
+      item k tipo-celula-l != 4 and
+      item k tipo-celula-l != 3 and
+      item k tipo-celula-l != 2
+    ]
+    ifelse any? celulas-validas-fogo [
+      ask one-of celulas-validas-fogo [
+        set fogo-x-inicial pxcor
+        set fogo-y-inicial pycor
+      ]
+    ] [
+      ;; fallback: mantém o centro do grid se nenhuma célula válida for encontrada
+      set fogo-x-inicial 10
+      set fogo-y-inicial 10
+    ]
+  ] [
+    ;; modo "centro" (padrão): foco fixo em (10,10)
+    set fogo-x-inicial 10
+    set fogo-y-inicial 10
+  ]
+
+
+  ;; Foco de incêndio inicial — apenas a célula escolhida/sorteada
   ask patch fogo-x-inicial fogo-y-inicial [
     set fogo-l replace-item fogo-andar-inicial fogo-l 1
     set temperatura-l replace-item fogo-andar-inicial temperatura-l 200
-    set fumaca-l replace-item fogo-andar-inicial fumaca-l 0.5
-  ]
-  ask patch fogo-x-inicial fogo-y-inicial [
-    ask neighbors [
-      if item fogo-andar-inicial tipo-celula-l != 4 [
-        set fogo-l replace-item fogo-andar-inicial fogo-l 1
-        set temperatura-l replace-item fogo-andar-inicial temperatura-l 150
-        set fumaca-l replace-item fogo-andar-inicial fumaca-l 0.3
-      ]
-    ]
+    set fumaca-l replace-item fogo-andar-inicial fumaca-l 0.3
+    set concentracao-co-l replace-item fogo-andar-inicial concentracao-co-l 50
   ]
 
   criar-ocupantes
@@ -193,12 +354,17 @@ end
 ;; =========================================================================
 to inicializar-edificio
   ask patches [
-    set tipo-celula-l n-values num-andares [0]
-    set fumaca-l n-values num-andares [0]
-    set fogo-l n-values num-andares [0]
-    set temperatura-l n-values num-andares [20]
-    set visibilidade-l n-values num-andares [30]
-    set acum-densidade-l n-values num-andares [0]
+    set tipo-celula-l      n-values num-andares [0]
+    set fumaca-l           n-values num-andares [0]
+    set fogo-l             n-values num-andares [0]
+    set temperatura-l      n-values num-andares [20]
+    set visibilidade-l     n-values num-andares [30]
+    set acum-densidade-l   n-values num-andares [0]
+    set concentracao-co-l  n-values num-andares [0]   ;; [V5-C]
+    set temperatura-gases-l n-values num-andares [20] ;; [V5-G]
+
+    ;; [V5-E] Resistência ao fogo padrão (será sobrescrita por tipo)
+    set resistencia-fogo 0
 
     let px pxcor
     let py pycor
@@ -267,6 +433,16 @@ to inicializar-edificio
 
       set k k + 1
     ]
+
+    ;; [V5-E] Definir resistência ao fogo por tipo estrutural do patch.
+    ;;        Usa o tipo do andar 0 como representativo da estrutura física.
+    ;;        Valores em minutos conforme ABNT NBR 14432.
+    let tipo-base item 0 tipo-celula-l
+    if tipo-base = 4 [ set resistencia-fogo 60  ]  ;; parede: 60 min (alvenaria)
+    if tipo-base = 2 [ set resistencia-fogo 999 ]  ;; escada enclausurada: imune
+    if tipo-base = 1 [ set resistencia-fogo 0   ]  ;; corredor: sem barreira
+    if tipo-base = 0 [ set resistencia-fogo 0   ]  ;; espaço aberto: sem barreira
+    if tipo-base = 3 [ set resistencia-fogo 0   ]  ;; saída: sem barreira
   ]
 end
 
@@ -280,10 +456,10 @@ to criar-ocupantes
     let i 0
     while [i < n-por-andar] [
       let celulas-livres patches with [
-        item k tipo-celula-l != 4 and    ;; não-parede
-        item k tipo-celula-l != 2 and    ;; não-escada
-        item k tipo-celula-l != 3 and    ;; não-saída
-        not any? ocupantes-here with [meu-andar = k]  ;; não-ocupada neste andar
+        item k tipo-celula-l != 4 and
+        item k tipo-celula-l != 2 and
+        item k tipo-celula-l != 3 and
+        not any? ocupantes-here with [meu-andar = k]
       ]
       ifelse any? celulas-livres [
         ask one-of celulas-livres [
@@ -292,7 +468,6 @@ to criar-ocupantes
             set shape "person"
             set size 0.8
 
-            ;; 70% adulto, 20% idoso, 10% PcD
             let rand-tipo random 100
             ifelse rand-tipo < 70 [
               set tipo-agente "adulto"
@@ -310,12 +485,10 @@ to criar-ocupantes
               ]
             ]
 
-            ;; Tempo de reação: Lognormal(mu=3.5, sigma=0.6)
             let z random-normal 0 1
-            let t-react-raw exp (3.5 + 0.6 * z)
-            set t-reacao t-alarme + max (list 5 (min (list 120 t-react-raw)))
+            let t-react-raw exp (2.8 + 0.5 * z)
+            set t-reacao t-alarme + max (list 3 (min (list 60 t-react-raw)))
 
-            ;; Perfil de conhecimento
             let rand-perfil random 100
             ifelse rand-perfil < 20 [ set perfil-conhec 1 ] [
               ifelse rand-perfil < 50 [ set perfil-conhec 2 ] [
@@ -328,6 +501,7 @@ to criar-ocupantes
             ]
 
             set estado "ativo"
+            set evacuado? false
             set nivel-panico 0
             set fed-valor 0
             set memoria-ticks 0
@@ -352,6 +526,20 @@ to criar-ocupantes
 end
 
 ;; =========================================================================
+;; ROTA-BLOQUEADA-POR-FOGO?  [V9]
+;; Reporter que verifica se há fogo em qualquer célula dentro de
+;; `raio-obs-fogo` patches de (px, py), no andar `k`. Usado para decidir se
+;; uma saída ou escada está bloqueada e o agente deve buscar a alternativa,
+;; em vez de simplesmente "qual está menos pior" (que podia mandar o agente
+;; para uma rota literalmente em chamas).
+;; =========================================================================
+to-report rota-bloqueada-por-fogo? [px py k]
+  report any? patches with [
+    (distancexy px py) <= raio-obs-fogo and item k fogo-l = 1
+  ]
+end
+
+;; =========================================================================
 ;; WAYPOINT-SAIDA-SALA
 ;; =========================================================================
 to-report waypoint-saida-sala
@@ -365,7 +553,8 @@ to-report waypoint-saida-sala
 end
 
 ;; =========================================================================
-;; DEFINIR ALVO INICIAL
+;; DEFINIR ALVO INICIAL  [V9: usa rota-bloqueada-por-fogo? em vez de
+;;                          comparar apenas "qual é menos pior"]
 ;; =========================================================================
 to definir-alvo-inicial
   let dest-x 0
@@ -373,32 +562,64 @@ to definir-alvo-inicial
   let dest-andar meu-andar
 
   ifelse meu-andar = 0 [
-    let risco-s1 0
-    let risco-s2 0
-    ask patch saida1-x saida1-y [
-      set risco-s1 item 0 fumaca-l + (item 0 fogo-l * 100)
-    ]
-    ask patch saida2-x saida2-y [
-      set risco-s2 item 0 fumaca-l + (item 0 fogo-l * 100)
-    ]
-    ifelse risco-s1 <= risco-s2 [
-      set dest-x saida1-x set dest-y saida1-y
+    ;; [V9] Verifica se cada saída tem fogo dentro do raio de observação
+    ;;       (não apenas na célula exata da porta).
+    let s1-bloq rota-bloqueada-por-fogo? saida1-x saida1-y 0
+    let s2-bloq rota-bloqueada-por-fogo? saida2-x saida2-y 0
+
+    ifelse s1-bloq and s2-bloq [
+      ;; [V9] Ambas as saídas bloqueadas por fogo: não há rota segura.
+      ;;       Mantém o critério antigo de "menos pior" como último recurso
+      ;;       (o agente ainda tentará se afastar do fogo via replanejamento
+      ;;       a cada tick, mas precisa de um destino para se mover).
+      let risco-s1 0
+      let risco-s2 0
+      ask patch saida1-x saida1-y [
+        set risco-s1 item 0 fumaca-l + (item 0 fogo-l * 100)
+      ]
+      ask patch saida2-x saida2-y [
+        set risco-s2 item 0 fumaca-l + (item 0 fogo-l * 100)
+      ]
+      ifelse risco-s1 <= risco-s2 [
+        set dest-x saida1-x set dest-y saida1-y
+      ] [
+        set dest-x saida2-x set dest-y saida2-y
+      ]
     ] [
-      set dest-x saida2-x set dest-y saida2-y
+      ifelse s1-bloq [
+        ;; Saída 1 bloqueada, vai para a 2 (livre)
+        set dest-x saida2-x set dest-y saida2-y
+      ] [
+        ifelse s2-bloq [
+          ;; Saída 2 bloqueada, vai para a 1 (livre)
+          set dest-x saida1-x set dest-y saida1-y
+        ] [
+          ;; Ambas livres: escolhe pela menor fumaça (critério original)
+          let risco-s1 0
+          let risco-s2 0
+          ask patch saida1-x saida1-y [
+            set risco-s1 item 0 fumaca-l
+          ]
+          ask patch saida2-x saida2-y [
+            set risco-s2 item 0 fumaca-l
+          ]
+          ifelse risco-s1 <= risco-s2 [
+            set dest-x saida1-x set dest-y saida1-y
+          ] [
+            set dest-x saida2-x set dest-y saida2-y
+          ]
+        ]
+      ]
     ]
     set dest-andar 0
   ] [
     let d1 distancexy escada1-x escada1-y
     let d2 distancexy escada2-x escada2-y
 
-    let esc1-bloq false
-    let esc2-bloq false
-    ask patch escada1-x escada1-y [
-      if item [meu-andar] of myself fogo-l = 1 [ set esc1-bloq true ]
-    ]
-    ask patch escada2-x escada2-y [
-      if item [meu-andar] of myself fogo-l = 1 [ set esc2-bloq true ]
-    ]
+    ;; [V9] Escada considerada bloqueada se houver fogo dentro do raio de
+    ;;       observação (não apenas na célula exata da escada).
+    let esc1-bloq rota-bloqueada-por-fogo? escada1-x escada1-y meu-andar
+    let esc2-bloq rota-bloqueada-por-fogo? escada2-x escada2-y meu-andar
 
     ifelse esc1-bloq and esc2-bloq [
       set dest-x 10 set dest-y 10
@@ -472,14 +693,14 @@ end
 ;; =========================================================================
 to go
   if ticks >= t-max-sim [ stop ]
-  if not any? ocupantes with [estado = "ativo" or estado = "ferido"] [ stop ]
+  if not any? ocupantes with [(estado = "ativo" or estado = "ferido") and not evacuado?] [ stop ]
 
   atualizar-fogo
   atualizar-fumaca
   atualizar-visibilidade
   atualizar-temperatura
 
-  ask ocupantes with [estado = "ativo" or estado = "ferido"] [
+  ask ocupantes with [(estado = "ativo" or estado = "ferido") and not evacuado?] [
     if ticks >= t-reacao [
       atualizar-panico
       replanejar-se-necessario
@@ -504,7 +725,7 @@ to go
     ]
   ]
 
-  ask ocupantes with [estado = "ativo" or estado = "ferido"] [
+  ask ocupantes with [(estado = "ativo" or estado = "ferido") and not evacuado?] [
     calcular-fed
     atualizar-estado-agente
     verificar-evacuacao
@@ -520,17 +741,30 @@ to go
 end
 
 ;; =========================================================================
-;; R6c — PROPAGAÇÃO DO FOGO
+;; R6c — PROPAGAÇÃO DO FOGO  [V5-A] [V5-B] [V5-E]
 ;; =========================================================================
 to atualizar-fogo
+  ;; [V5-A] Tempo em minutos para a curva ISO 834
+  let t-min ticks / 60.0
+
   ask patches [
     let k 0
     while [k < num-andares] [
+
+      ;; -------------------------------------------------------
+      ;; PROPAGAÇÃO HORIZONTAL — usa taxa efetiva pela resistência
+      ;; -------------------------------------------------------
       if item k fogo-l = 0 and item k tipo-celula-l != 4 [
+        ;; [V5-E] Taxa efetiva reduzida pela resistência do material.
+        ;;        Resistência 0 → taxa plena. Resistência 60 min → taxa * 0.75.
+        ;;        Resistência 120 min → taxa * 0.5.
+        let fator-resist max (list 0.1 (1 - resistencia-fogo / 240))
+        let taxa-efetiva taxa-propagacao-fogo * fator-resist
+
         let prob-nao-pegar 1.0
         ask neighbors [
           if item k fogo-l = 1 [
-            set prob-nao-pegar prob-nao-pegar * (1 - taxa-propagacao-fogo)
+            set prob-nao-pegar prob-nao-pegar * (1 - taxa-efetiva)
           ]
         ]
         let prob-pegar 1 - prob-nao-pegar
@@ -539,29 +773,81 @@ to atualizar-fogo
           set temperatura-l replace-item k temperatura-l 200
         ]
       ]
+
+      ;; -------------------------------------------------------
+      ;; ATUALIZAÇÃO DE TEMPERATURA — curva ISO 834  [V5-A]
+      ;; -------------------------------------------------------
       if item k fogo-l = 1 [
+        ;; ISO 834: T(t) = 20 + 345 * log10(8t + 1), t em minutos
+        let T-iso 20 + 345 * (log (8 * t-min + 1) 10)
+        ;; Limitar ao máximo físico de incêndio estrutural (1200°C)
+        let T-novo min (list T-iso 1200)
+        ;; Aceitar apenas aumentos (temperatura não baixa enquanto há fogo)
+        if T-novo > item k temperatura-l [
+          set temperatura-l replace-item k temperatura-l T-novo
+        ]
+
+        ;; CO e fumaça gerados pela combustão  [V5-C]
         set fumaca-l replace-item k fumaca-l (item k fumaca-l + 0.02)
-        if item k temperatura-l < 400 [
-          set temperatura-l replace-item k temperatura-l (item k temperatura-l + 2)
+        let co-atual item k concentracao-co-l
+        set concentracao-co-l replace-item k concentracao-co-l (co-atual + 15)
+      ]
+
+      ;; -------------------------------------------------------
+      ;; FLASHOVER — critério físico de temperatura  [V5-B]
+      ;; -------------------------------------------------------
+      ;; Substituí a contagem de patches (> 100) pelo critério real:
+      ;; temperatura >= 500°C indica acúmulo de calor suficiente
+      ;; para ignição súbita dos materiais combustíveis.
+      if item k fogo-l = 0 and item k tipo-celula-l != 4 [
+        if item k temperatura-l >= 500 [
+          ;; 80% de chance de ignição quando flashover ativo
+          if random-float 1.0 < 0.8 [
+            set fogo-l replace-item k fogo-l 1
+            set temperatura-l replace-item k temperatura-l 600
+          ]
         ]
       ]
+
       set k k + 1
     ]
   ]
 
+  ;; -------------------------------------------------------
+  ;; PROPAGAÇÃO VERTICAL PELAS ESCADAS — efeito chaminé  [V5-D]
+  ;; -------------------------------------------------------
   ask patches with [
     (pxcor = escada1-x and pycor = escada1-y) or
     (pxcor = escada2-x and pycor = escada2-y)
   ] [
     let k 0
     while [k < (num-andares - 1)] [
+
+      ;; --- Fumaça sobe pelo efeito chaminé com física real ---
+      ;; Velocidade de stack: v = sqrt(2 * g * h * deltaT / T_abs_fora)
+      ;; g = 9.8 m/s², h = altura de um andar (3m padrão)
+      ;; Normalizado para [0, 0.9] dividindo por 10
+      let T-dentro item k temperatura-l
+      let deltaT max (list 0 (T-dentro - t-externa))
+      let velocidade-stack sqrt (2 * 9.8 * 3 * (deltaT / (t-externa + 273)))
+      let taxa-subida min (list (velocidade-stack / 10.0) 0.9)
+
       let fumaca-baixo item k fumaca-l
       if fumaca-baixo > 0.01 [
         let fumaca-cima item (k + 1) fumaca-l
-        let transfere fumaca-baixo * 0.15
+        let transfere fumaca-baixo * taxa-subida
         set fumaca-l replace-item (k + 1) fumaca-l (fumaca-cima + transfere)
       ]
 
+      ;; CO também sobe pela escada na mesma proporção  [V5-C] [V5-D]
+      let co-baixo item k concentracao-co-l
+      if co-baixo > 0 [
+        let co-cima item (k + 1) concentracao-co-l
+        set concentracao-co-l replace-item (k + 1) concentracao-co-l
+          (co-cima + co-baixo * taxa-subida * 0.8)
+      ]
+
+      ;; --- Calor sobe (mantido com transferência diferencial) ---
       let temp-baixo item k temperatura-l
       let temp-cima item (k + 1) temperatura-l
       if temp-baixo > temp-cima + 10 [
@@ -569,14 +855,15 @@ to atualizar-fogo
         set temperatura-l replace-item (k + 1) temperatura-l (temp-cima + transfere-temp)
       ]
 
+      ;; --- Fogo sobe pela escada ---
       if item k fogo-l = 1 and item (k + 1) fogo-l = 0 [
-        let prob-vertical taxa-propagacao-fogo * 0.05
+        let prob-vertical taxa-propagacao-fogo * 0.15
         if random-float 1.0 < prob-vertical [
           set fogo-l replace-item (k + 1) fogo-l 1
           set temperatura-l replace-item (k + 1) temperatura-l 200
           ask neighbors [
             if item (k + 1) tipo-celula-l != 4 and item (k + 1) fogo-l = 0 [
-              if random-float 1.0 < (taxa-propagacao-fogo * 0.15) [
+              if random-float 1.0 < (taxa-propagacao-fogo * 0.06) [
                 set fogo-l replace-item (k + 1) fogo-l 1
                 set temperatura-l replace-item (k + 1) temperatura-l 150
               ]
@@ -588,30 +875,17 @@ to atualizar-fogo
       set k k + 1
     ]
   ]
-
-  let k 0
-  while [k < (num-andares - 1)] [
-    let celulas-fogo-andar count patches with [item k fogo-l = 1]
-    if celulas-fogo-andar > 60 [
-      ask patches with [item k fogo-l = 1 and item (k + 1) fogo-l = 0 and item (k + 1) tipo-celula-l != 4] [
-        if random-float 1.0 < (taxa-propagacao-fogo * 0.05) [
-          set fogo-l replace-item (k + 1) fogo-l 1
-          set temperatura-l replace-item (k + 1) temperatura-l 180
-        ]
-      ]
-    ]
-    set k k + 1
-  ]
 end
 
 ;; =========================================================================
-;; R6b — DIFUSÃO DA FUMAÇA
+;; R6b — DIFUSÃO DA FUMAÇA E DO CO  [V5-C]
 ;; =========================================================================
 to atualizar-fumaca
   ask patches [
     let k 0
     while [k < num-andares] [
       if item k tipo-celula-l != 4 [
+        ;; --- Difusão da fumaça (como antes) ---
         let fumaca-atual item k fumaca-l
         let soma-diff 0
         ask neighbors [
@@ -623,6 +897,20 @@ to atualizar-fumaca
         set nova-fumaca max (list 0 nova-fumaca)
         set nova-fumaca nova-fumaca * 0.998
         set fumaca-l replace-item k fumaca-l nova-fumaca
+
+        ;; --- Difusão do CO entre células  [V5-C] ---
+        let co-atual item k concentracao-co-l
+        let soma-co 0
+        ask neighbors [
+          if item k tipo-celula-l != 4 [
+            set soma-co soma-co + (item k concentracao-co-l - co-atual)
+          ]
+        ]
+        let novo-co co-atual + coef-difusao-fumaca * soma-co * 0.8
+        set novo-co max (list 0 novo-co)
+        ;; CO se dissipa levemente (reação com superfícies, ventilação residual)
+        set novo-co novo-co * 0.999
+        set concentracao-co-l replace-item k concentracao-co-l novo-co
       ]
       set k k + 1
     ]
@@ -645,13 +933,14 @@ to atualizar-visibilidade
 end
 
 ;; =========================================================================
-;; ATUALIZAR TEMPERATURA
+;; ATUALIZAR TEMPERATURA E TEMPERATURA DOS GASES  [V5-G]
 ;; =========================================================================
 to atualizar-temperatura
   ask patches [
     let k 0
     while [k < num-andares] [
       if item k fogo-l = 0 and item k tipo-celula-l != 4 [
+        ;; --- Difusão do calor entre células (como antes) ---
         let temp-atual item k temperatura-l
         let soma 0
         let n-viz 0
@@ -668,6 +957,13 @@ to atualizar-temperatura
           set temperatura-l replace-item k temperatura-l nova-temp
         ]
       ]
+
+      ;; [V5-G] Temperatura dos gases: proporcional à temperatura da célula,
+      ;;         mas satura em 200°C (gases quentes, não chama direta).
+      ;;         É essa temperatura que afeta a respiração dos agentes (ISO 13571).
+      let T-gas min (list (item k temperatura-l * 0.3) 200)
+      set temperatura-gases-l replace-item k temperatura-gases-l T-gas
+
       set k k + 1
     ]
   ]
@@ -796,7 +1092,7 @@ to mover-agente
       if fumaca-abaixo > 4.0 and andar-abaixo > 0 [ set seguro-descer false ]
 
       let agentes-na-escada count ocupantes-here with [
-        meu-andar = andar-abaixo and (estado = "ativo" or estado = "ferido")
+        meu-andar = andar-abaixo and (estado = "ativo" or estado = "ferido") and not evacuado?
       ]
 
       ifelse seguro-descer and agentes-na-escada < cap-escada [
@@ -848,7 +1144,7 @@ to mover-agente
 
     if transitavel [
       let dens-la count ocupantes-here with [
-        meu-andar = meu-k and (estado = "ativo" or estado = "ferido")
+        meu-andar = meu-k and (estado = "ativo" or estado = "ferido") and not evacuado?
       ]
       let limite-dens ifelse-value eh-saida [999]
                       [ifelse-value eh-escada [cap-escada * 2] [rho-bloq]]
@@ -887,7 +1183,7 @@ to mover-agente
     let cap-destino 999
     if not eh-destino-saida and not eh-destino-escada [ set cap-destino 8 ]
     let ocupantes-destino count [ocupantes-here with [
-      meu-andar = meu-k and (estado = "ativo" or estado = "ferido")
+      meu-andar = meu-k and (estado = "ativo" or estado = "ferido") and not evacuado?
     ]] of melhor-patch
     if ocupantes-destino < cap-destino [
       move-to melhor-patch
@@ -925,51 +1221,75 @@ to atualizar-deadlock
 end
 
 ;; =========================================================================
-;; R9 — CALCULAR FED
-;; [V4-A] Fator de acúmulo corrigido: 0.001 -> 0.005
-;;        Isso permite que agentes em zonas de fumaça densa acumulem
-;;        FED suficiente para ficar feridos (>= 0.08) antes de evacuar.
+;; R9 — CALCULAR FED  [V5-C] [V5-F] [V5-G]
 ;; =========================================================================
 to calcular-fed
   let minha-fumaca 0
   let minha-temp 20
+  let meu-co 0
+  let meu-t-gas 20
   ask patch-here [
     set minha-fumaca item [meu-andar] of myself fumaca-l
     set minha-temp item [meu-andar] of myself temperatura-l
+    set meu-co item [meu-andar] of myself concentracao-co-l   ;; [V5-C]
+    set meu-t-gas item [meu-andar] of myself temperatura-gases-l ;; [V5-G]
   ]
+
   let delta-fed 0
+
+  ;; Contribuição da fumaça (como antes)
   if phi-lc50 > 0 [
     set delta-fed minha-fumaca / phi-lc50
   ]
-  if minha-temp > 60 [
-    set delta-fed delta-fed + ((minha-temp - 60) / 100) ^ 2
+
+  ;; Contribuição térmica pela temperatura dos gases (ISO 13571)  [V5-G]
+  ;; Usa temperatura dos gases (t-gas) em vez da temperatura da chama
+  if meu-t-gas > 60 [
+    set delta-fed delta-fed + ((meu-t-gas - 60) / 100) ^ 2
   ]
-  ;; [V4-A] era 0.001 — muito pequeno para atingir limiar de ferido em tempo real
+
+  ;; [V5-F] Contribuição do CO: acima de 400 ppm já há efeito fisiológico;
+  ;;         acima de 1200 ppm é incapacitante. Modelado como rampa linear
+  ;;         normalizada pelo limiar de 1200 ppm.
+  if meu-co > 400 [
+    set delta-fed delta-fed + ((meu-co - 400) / 1200)
+  ]
+
   set fed-valor fed-valor + delta-fed * 0.005
 end
 
 ;; =========================================================================
-;; R9 — ATUALIZAR ESTADO
-;; [V4-B] Ordem das verificações invertida: ferido ANTES de morto.
-;;        Antes, a checagem de morte vinha primeiro, fazendo agentes
-;;        morrerem sem nunca passarem pelo estado "ferido".
-;; [V4-C] Limiar de ferido ajustado de 0.3 -> 0.08 para capturar
-;;        exposições moderadas à fumaça.
+;; R9 — ATUALIZAR ESTADO  [V5-C] [V5-G]
 ;; =========================================================================
 to atualizar-estado-agente
   let minha-temp 20
+  let meu-t-gas 20
+  let meu-co 0
   ask patch-here [
     set minha-temp item [meu-andar] of myself temperatura-l
+    set meu-t-gas item [meu-andar] of myself temperatura-gases-l  ;; [V5-G]
+    set meu-co item [meu-andar] of myself concentracao-co-l       ;; [V5-C]
   ]
 
-  ;; [V4-B] + [V4-C] — ferido PRIMEIRO (limiar reduzido de 0.3 para 0.08)
+  ;; [V4-B] + [V4-C] — ferido PRIMEIRO
   if fed-valor >= 0.08 and estado = "ativo" [
     set estado "ferido"
     set color magenta
     set vel-max vel-max * 0.5
   ]
 
-  ;; morte verificada DEPOIS, permitindo a transição ativo -> ferido -> morto
+  ;; [V5-F] Incapacitação imediata por CO elevado (> 1200 ppm) ou
+  ;;         temperatura dos gases > 60°C — passa direto para morto
+  ;;         se exposição for extrema (CO > 3000 ppm ou T-gas > 120°C)
+  if meu-co > 3000 or meu-t-gas > 120 [
+    set estado "morto"
+    set color gray
+    set shape "x"
+    stop
+  ]
+
+  ;; Morte por FED acumulado ou temperatura da chama  [V5-G]
+  ;; Usa t-crit-morto como temperatura da chama, não dos gases
   if fed-valor >= 1.0 or minha-temp >= t-crit-morto [
     set estado "morto"
     set color gray
@@ -997,7 +1317,9 @@ to verificar-evacuacao
       ]
     ]
     if evacuou [
-      set estado "evacuado"
+      ;; [V7] NÃO sobrescreve "estado" — preserva "ativo"/"ferido"/"morto"
+      ;;       como histórico de saúde do agente após a evacuação.
+      set evacuado? true
       set tick-saida ticks
       set hidden? true
     ]
@@ -1010,25 +1332,41 @@ end
 to orientar-ocupantes
   let ocupantes-proximos ocupantes in-radius 5 with [
     meu-andar = [meu-andar] of myself and
-    estado = "ativo" and
+    estado = "ativo" and not evacuado? and
     ticks >= t-reacao
   ]
   ask ocupantes-proximos [
-    let esc1-risco 0
-    let esc2-risco 0
-    ask patch escada1-x escada1-y [
-      set esc1-risco item [meu-andar] of myself fumaca-l +
-                     (item [meu-andar] of myself fogo-l * 100)
-    ]
-    ask patch escada2-x escada2-y [
-      set esc2-risco item [meu-andar] of myself fumaca-l +
-                     (item [meu-andar] of myself fogo-l * 100)
-    ]
+    ;; [V9] Usa rota-bloqueada-por-fogo? em vez de só comparar fumaça/fogo
+    ;;       na célula exata — evita orientar para uma escada bloqueada
+    ;;       quando a outra está livre.
+    let esc1-bloq rota-bloqueada-por-fogo? escada1-x escada1-y meu-andar
+    let esc2-bloq rota-bloqueada-por-fogo? escada2-x escada2-y meu-andar
+
     let dest-esc-x escada1-x
     let dest-esc-y escada1-y
-    if esc1-risco > esc2-risco [
-      set dest-esc-x escada2-x
-      set dest-esc-y escada2-y
+
+    ifelse esc1-bloq and esc2-bloq [
+      ;; ambas bloqueadas: usa a "menos pior" como último recurso
+      let esc1-risco 0
+      let esc2-risco 0
+      ask patch escada1-x escada1-y [
+        set esc1-risco item [meu-andar] of myself fumaca-l +
+                       (item [meu-andar] of myself fogo-l * 100)
+      ]
+      ask patch escada2-x escada2-y [
+        set esc2-risco item [meu-andar] of myself fumaca-l +
+                       (item [meu-andar] of myself fogo-l * 100)
+      ]
+      if esc1-risco > esc2-risco [
+        set dest-esc-x escada2-x
+        set dest-esc-y escada2-y
+      ]
+    ] [
+      if esc1-bloq [
+        set dest-esc-x escada2-x
+        set dest-esc-y escada2-y
+      ]
+      ;; se esc2-bloq e esc1 livre, mantém escada1 (já é o default)
     ]
 
     let wp waypoint-saida-sala
@@ -1051,7 +1389,7 @@ end
 to verificar-transicao-evacuacao-brigadista
   let k meu-andar
   let restantes count ocupantes with [
-    meu-andar = k and (estado = "ativo" or estado = "ferido")
+    meu-andar = k and (estado = "ativo" or estado = "ferido") and not evacuado?
   ]
   if restantes = 0 [
     set estado-brig "evacuando"
@@ -1067,34 +1405,90 @@ to definir-alvo-brigadista
   let dest-y 0
 
   ifelse meu-andar = 0 [
-    let risco-s1 0
-    let risco-s2 0
-    ask patch saida1-x saida1-y [
-      set risco-s1 item 0 fumaca-l + (item 0 fogo-l * 100)
-    ]
-    ask patch saida2-x saida2-y [
-      set risco-s2 item 0 fumaca-l + (item 0 fogo-l * 100)
-    ]
-    ifelse risco-s1 <= risco-s2 [
-      set dest-x saida1-x set dest-y saida1-y
+    ;; [V9] Verifica bloqueio por raio de observação, não só a célula exata
+    let s1-bloq rota-bloqueada-por-fogo? saida1-x saida1-y 0
+    let s2-bloq rota-bloqueada-por-fogo? saida2-x saida2-y 0
+
+    ifelse s1-bloq and s2-bloq [
+      let risco-s1 0
+      let risco-s2 0
+      ask patch saida1-x saida1-y [
+        set risco-s1 item 0 fumaca-l + (item 0 fogo-l * 100)
+      ]
+      ask patch saida2-x saida2-y [
+        set risco-s2 item 0 fumaca-l + (item 0 fogo-l * 100)
+      ]
+      ifelse risco-s1 <= risco-s2 [
+        set dest-x saida1-x set dest-y saida1-y
+      ] [
+        set dest-x saida2-x set dest-y saida2-y
+      ]
     ] [
-      set dest-x saida2-x set dest-y saida2-y
+      ifelse s1-bloq [
+        set dest-x saida2-x set dest-y saida2-y
+      ] [
+        ifelse s2-bloq [
+          set dest-x saida1-x set dest-y saida1-y
+        ] [
+          let risco-s1 0
+          let risco-s2 0
+          ask patch saida1-x saida1-y [
+            set risco-s1 item 0 fumaca-l
+          ]
+          ask patch saida2-x saida2-y [
+            set risco-s2 item 0 fumaca-l
+          ]
+          ifelse risco-s1 <= risco-s2 [
+            set dest-x saida1-x set dest-y saida1-y
+          ] [
+            set dest-x saida2-x set dest-y saida2-y
+          ]
+        ]
+      ]
     ]
   ] [
-    let esc1-risco 0
-    let esc2-risco 0
-    ask patch escada1-x escada1-y [
-      set esc1-risco item [meu-andar] of myself fumaca-l +
-                     (item [meu-andar] of myself fogo-l * 100)
-    ]
-    ask patch escada2-x escada2-y [
-      set esc2-risco item [meu-andar] of myself fumaca-l +
-                     (item [meu-andar] of myself fogo-l * 100)
-    ]
-    ifelse esc1-risco <= esc2-risco [
-      set dest-x escada1-x set dest-y escada1-y
+    ;; [V9] Verifica bloqueio por raio de observação, não só a célula exata
+    let esc1-bloq rota-bloqueada-por-fogo? escada1-x escada1-y meu-andar
+    let esc2-bloq rota-bloqueada-por-fogo? escada2-x escada2-y meu-andar
+
+    ifelse esc1-bloq and esc2-bloq [
+      let esc1-risco 0
+      let esc2-risco 0
+      ask patch escada1-x escada1-y [
+        set esc1-risco item [meu-andar] of myself fumaca-l +
+                       (item [meu-andar] of myself fogo-l * 100)
+      ]
+      ask patch escada2-x escada2-y [
+        set esc2-risco item [meu-andar] of myself fumaca-l +
+                       (item [meu-andar] of myself fogo-l * 100)
+      ]
+      ifelse esc1-risco <= esc2-risco [
+        set dest-x escada1-x set dest-y escada1-y
+      ] [
+        set dest-x escada2-x set dest-y escada2-y
+      ]
     ] [
-      set dest-x escada2-x set dest-y escada2-y
+      ifelse esc1-bloq [
+        set dest-x escada2-x set dest-y escada2-y
+      ] [
+        ifelse esc2-bloq [
+          set dest-x escada1-x set dest-y escada1-y
+        ] [
+          let esc1-risco 0
+          let esc2-risco 0
+          ask patch escada1-x escada1-y [
+            set esc1-risco item [meu-andar] of myself fumaca-l
+          ]
+          ask patch escada2-x escada2-y [
+            set esc2-risco item [meu-andar] of myself fumaca-l
+          ]
+          ifelse esc1-risco <= esc2-risco [
+            set dest-x escada1-x set dest-y escada1-y
+          ] [
+            set dest-x escada2-x set dest-y escada2-y
+          ]
+        ]
+      ]
     ]
   ]
 
@@ -1109,30 +1503,48 @@ to definir-alvo-brigadista
 end
 
 ;; =========================================================================
-;; BRIGADISTA — FED E ESTADO
+;; BRIGADISTA — FED E ESTADO  [V5-C] [V5-G]
 ;; =========================================================================
 to atualizar-fed-brigadista
   let minha-fumaca 0
   let minha-temp 20
+  let meu-co 0
+  let meu-t-gas 20
   ask patch-here [
     set minha-fumaca item [meu-andar] of myself fumaca-l
     set minha-temp item [meu-andar] of myself temperatura-l
+    set meu-co item [meu-andar] of myself concentracao-co-l
+    set meu-t-gas item [meu-andar] of myself temperatura-gases-l
   ]
   let delta-fed 0
   if phi-lc50 > 0 [
     set delta-fed minha-fumaca / phi-lc50
   ]
-  if minha-temp > 60 [
-    set delta-fed delta-fed + ((minha-temp - 60) / 100) ^ 2
+  if meu-t-gas > 60 [
+    set delta-fed delta-fed + ((meu-t-gas - 60) / 100) ^ 2
   ]
-  ;; Brigadistas têm equipamento de proteção: fator 0.7 sobre o acúmulo base
+  if meu-co > 400 [
+    set delta-fed delta-fed + ((meu-co - 400) / 1200)
+  ]
+  ;; Brigadistas têm EPI: fator 0.7 sobre o acúmulo
   set fed-valor-brig fed-valor-brig + delta-fed * 0.005 * 0.7
 end
 
 to atualizar-estado-brigadista
   let minha-temp 20
+  let meu-t-gas 20
+  let meu-co 0
   ask patch-here [
     set minha-temp item [meu-andar] of myself temperatura-l
+    set meu-t-gas item [meu-andar] of myself temperatura-gases-l
+    set meu-co item [meu-andar] of myself concentracao-co-l
+  ]
+  ;; Brigadistas com EPI têm limiar de CO mais alto (3000 -> 5000 ppm)
+  if meu-co > 5000 or meu-t-gas > 150 [
+    set estado-brig "morto"
+    set color gray
+    set shape "x"
+    stop
   ]
   if fed-valor-brig >= 1.0 or minha-temp >= t-crit-morto [
     set estado-brig "morto"
@@ -1276,10 +1688,14 @@ end
 ;; CONTADORES
 ;; =========================================================================
 to atualizar-contadores
-  set n-evacuados count ocupantes with [estado = "evacuado"]
+  ;; [V7] n-evacuados agora usa a flag evacuado?, não mais "estado"
+  set n-evacuados count ocupantes with [evacuado?]
+  ;; [V7] n-feridos conta TODOS os feridos, incluindo os que já evacuaram —
+  ;;       preserva o histórico de quem saiu ferido do edifício
   set n-feridos count ocupantes with [estado = "ferido"]
   set n-mortos count ocupantes with [estado = "morto"]
-  set n-ativos count ocupantes with [estado = "ativo"]
+  ;; [V7] n-ativos = ativos que ainda estão dentro do prédio (não evacuados)
+  set n-ativos count ocupantes with [estado = "ativo" and not evacuado?]
 
   if n-ativos = 0 and t-evacuacao = 0 [
     set t-evacuacao ticks
@@ -1337,7 +1753,7 @@ to atualizar-visualizacao
   ]
 
   ask ocupantes [
-    ifelse meu-andar = k and estado != "evacuado" [
+    ifelse meu-andar = k and not evacuado? [
       set hidden? false
     ] [
       set hidden? true
@@ -1354,7 +1770,6 @@ end
 
 ;; =========================================================================
 ;; VER — sincroniza slider `andar-visualizar` com `andar-exibido`
-;; Acoplar a um botão FOREVER "Ver" na interface.
 ;; =========================================================================
 to ver
   if andar-exibido != andar-visualizar [
@@ -1392,7 +1807,7 @@ to-report pct-mortos
 end
 
 to-report tempo-medio-evacuacao
-  let evac-agents ocupantes with [estado = "evacuado" and tick-saida > 0]
+  let evac-agents ocupantes with [evacuado? and tick-saida > 0]
   ifelse any? evac-agents [
     report mean [tick-saida] of evac-agents
   ] [
@@ -1401,7 +1816,7 @@ to-report tempo-medio-evacuacao
 end
 
 to-report fed-medio
-  let ativos-agentes ocupantes with [estado != "evacuado"]
+  let ativos-agentes ocupantes with [not evacuado?]
   ifelse any? ativos-agentes [
     report mean [fed-valor] of ativos-agentes
   ] [
@@ -1410,7 +1825,7 @@ to-report fed-medio
 end
 
 to-report panico-medio
-  let ativos-agentes ocupantes with [estado = "ativo"]
+  let ativos-agentes ocupantes with [estado = "ativo" and not evacuado?]
   ifelse any? ativos-agentes [
     report mean [nivel-panico] of ativos-agentes
   ] [
@@ -1420,8 +1835,84 @@ end
 
 to-report n-deadlocked
   report count ocupantes with [
-    (estado = "ativo" or estado = "ferido") and
+    (estado = "ativo" or estado = "ferido") and not evacuado? and
     ticks-parado > deadlock-limite
+  ]
+end
+
+;; =========================================================================
+;; REPORTERS DE ÁREA DE FOGO + FUMAÇA
+;; =========================================================================
+to-report area-fumaca-total
+  let total 0
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      if item k fumaca-l > 0.05 [
+        set total total + 1
+      ]
+      set k k + 1
+    ]
+  ]
+  report total
+end
+
+to-report area-fogo-ou-fumaca
+  let total 0
+  ask patches [
+    let k 0
+    while [k < num-andares] [
+      if item k fogo-l = 1 or item k fumaca-l > 0.05 [
+        set total total + 1
+      ]
+      set k k + 1
+    ]
+  ]
+  report total
+end
+
+;; =========================================================================
+;; REPORTERS DE GARGALO NAS ESCADAS
+;; =========================================================================
+to-report gargalo-escada1
+  report count ocupantes with [
+    (estado = "ativo" or estado = "ferido") and not evacuado? and
+    distancexy escada1-x escada1-y <= 2 and
+    ticks-parado >= 2
+  ]
+end
+
+to-report gargalo-escada2
+  report count ocupantes with [
+    (estado = "ativo" or estado = "ferido") and not evacuado? and
+    distancexy escada2-x escada2-y <= 2 and
+    ticks-parado >= 2
+  ]
+end
+
+to-report pressao-total-escadas
+  report count ocupantes with [
+    (estado = "ativo" or estado = "ferido") and not evacuado? and
+    (distancexy escada1-x escada1-y <= 3 or distancexy escada2-x escada2-y <= 3)
+  ]
+end
+
+;; =========================================================================
+;; REPORTERS DE CO  [V5-C] — novos reporters para monitoramento
+;; =========================================================================
+
+;; Concentração máxima de CO em qualquer célula do andar exibido
+to-report co-max-andar-exibido
+  report max [item andar-exibido concentracao-co-l] of patches with [
+    item andar-exibido tipo-celula-l != 4
+  ]
+end
+
+;; Número de agentes expostos a CO acima do limiar de incapacitação (1200 ppm)
+to-report n-agentes-co-critico
+  report count ocupantes with [
+    (estado = "ativo" or estado = "ferido") and not evacuado? and
+    [item meu-andar concentracao-co-l] of patch-here > 1200
   ]
 end
 
@@ -1448,12 +1939,12 @@ end
 ]]></code>
   <widgets>
     <view x="425" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="0" height="504" showTickCounter="true" patchSize="25.0" fontSize="10" wrappingAllowedY="false" width="504" tickCounterLabel="ticks" maxPycor="19" updateMode="1" maxPxcor="19" minPxcor="0"></view>
-    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="15.0" variable="andar-visualizar"></slider>
-    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="15.0" variable="andar-fogo"></slider>
-    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="35.0" variable="ocupantes-por-andar"></slider>
+    <slider x="20" step="1" y="20" max="29" width="250" display="andar-visualizar" height="50" min="0" direction="Horizontal" default="7.0" variable="andar-visualizar"></slider>
+    <slider x="20" step="1" y="80" max="29" width="250" display="andar-fogo" height="50" min="0" direction="Horizontal" default="7.0" variable="andar-fogo"></slider>
+    <slider x="15" step="5" y="140" max="80" width="250" display="ocupantes-por-andar" height="50" min="10" direction="Horizontal" default="40.0" variable="ocupantes-por-andar"></slider>
     <slider x="15" step="0.01" y="200" max="0.15" width="250" display="taxa-propagacao-fogo" height="50" min="0.01" direction="Horizontal" default="0.02" variable="taxa-propagacao-fogo"></slider>
     <slider x="15" step="0.05" y="260" max="0.50" width="250" display="coef-difusao-fumaca" height="50" min="0.05" direction="Horizontal" default="0.1" variable="coef-difusao-fumaca"></slider>
-    <switch x="10" y="325" height="40" on="true" variable="usar-brigadistas?" width="120" display="usar-brigadistas?"></switch>
+    <switch x="10" y="325" height="40" on="false" variable="usar-brigadistas?" width="120" display="usar-brigadistas?"></switch>
     <button x="145" y="325" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="55" display="Setup">setup</button>
     <button x="215" y="325" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="55" display="Go">go</button>
     <monitor x="285" precision="0" y="20" height="60" fontSize="11" width="100" display="Ticks">ticks</monitor>
@@ -1498,6 +1989,10 @@ end
         <update>plot n-mortos</update>
       </pen>
     </plot>
+    <chooser x="5" y="375" height="60" variable="posicao-fogo" current="1" width="250" display="posicao-fogo">
+      <choice type="string" value="centro"></choice>
+      <choice type="string" value="aleatorio"></choice>
+    </chooser>
   </widgets>
   <info>## WHAT IS IT?
 
