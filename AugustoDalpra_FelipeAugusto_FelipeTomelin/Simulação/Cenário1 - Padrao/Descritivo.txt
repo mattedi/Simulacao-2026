@@ -1,0 +1,1 @@
+Base: configuração padrão equilibrada, serve como referência para comparar os demais.
